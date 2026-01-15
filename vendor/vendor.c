@@ -7,12 +7,50 @@ int main()
 {
 	SystemInit();
 	usb_setup();
-	while (1) {
+
+	for (;;) {
 		uint32_t *ue = GetUEvent();
-		if (ue) {
+
+		if (ue)
 			printf("%lu %lx %lx %lx\n", ue[0], ue[1], ue[2], ue[3]);
+	}
+
+	return 0;
+}
+
+int isprint(int c)
+{
+	unsigned char uc = (unsigned char)c;
+
+	return (uc >= 32 && uc <= 126);
+}
+
+void hexdump(const void *data, uint32_t size)
+{
+	const uint8_t *data_ptr = (const uint8_t *)data;
+	uint32_t i, b;
+
+	for (i = 0; i < size; i++) {
+		if (i % 16 == 0) {
+			printf("%08lx  ", (uint32_t)data_ptr + i);
+		}
+		if (i % 8 == 0) {
+			printf(" ");
+		}
+		printf("%02x ", data_ptr[i]);
+		if (i % 16 == 15) {
+			printf(" |");
+			for (b = 0; b < 16; b++) {
+				if (isprint(data_ptr[i + b - 15])) {
+					printf("%c", data_ptr[i + b - 15]);
+				} else {
+					printf(".");
+				}
+			}
+			printf("|\n");
 		}
 	}
+	printf("%08lx\n", 16 + size - (size % 16));
 }
 
 void usb_handle_user_in_request(struct usb_endpoint *e, uint8_t *scratchpad,
@@ -38,11 +76,12 @@ void usb_handle_other_control_message(struct usb_endpoint *e, struct usb_urb *s,
 	LogUEvent(SysTick->CNT, s->wRequestTypeLSBRequestMSB,
 		  s->lValueLSBIndexMSB, s->wLength);
 	e->opaque = 0;
-	ist->current_endpoint = 0x02;
 }
 
 void usb_handle_user_data(struct usb_endpoint *e, int current_endpoint,
 			  uint8_t *data, int len, struct rv003usb_internal *ist)
 {
 	LogUEvent(SysTick->CNT, 0xffffffff, current_endpoint, len);
+	// if (current_endpoint == 2)
+	// 	hexdump(data, len);
 }
