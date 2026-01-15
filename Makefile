@@ -1,7 +1,7 @@
 
 PROJECTS:=bootloader \
-	demo_composite_hid \
-	cdc_exp \
+	examples/demo_composite_hid \
+	examples/cdc_exp \
 	vendor
 
 all : build
