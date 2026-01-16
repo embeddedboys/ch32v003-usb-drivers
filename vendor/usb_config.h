@@ -21,51 +21,89 @@
 
 #include <tusb_types.h>
 #include <cdc.h>
+#include <usb_def.h>
+#include <usb_util.h>
 
 #ifdef INSTANCE_DESCRIPTORS
 
+#define VENDOR_ID 0x1209
+#define PRODUCT_ID 0xc303
+
 //Taken from http://www.usbmadesimple.co.uk/ums_ms_desc_dev.htm
 static const uint8_t device_descriptor[] = {
-	18, 			// bLength: Length
-	TUSB_DESC_DEVICE,  	// bDescriptorType: Type (Device)
-	0x10, 0x01, 		// bcdUSB: Spec
-	TUSB_CLASS_VENDOR_SPECIFIC, // bDeviceClass: Device Class (Let config decide)
-	0x00, 			// bDeviceSubClass: Subclass
-	0x00, 			// bDeviceProtocol: Device Protocol
-//	TUSB_CLASS_CDC, MISC_SUBCLASS_COMMON, 0,  // Appears that you can go either way... app specific (use config descriptor) or this.
-	0x08, 			// bMaxPacketSize: Max packet size for EP0 (This has to be 8 because of the USB Low-Speed Standard)
-	0x09, 0x12, // idVendor: ID Vendor
-	0x03, 0xc3, // idProduct: ID Product
-	0x10, 0x01, // bcdDevice: ID Rev
-	1, // iManufacturer: Manufacturer string
-	2, // iProduct: Product string
-	3, // iSerial: Serial string
-	1, // bNumConfigurations: Max number of configurations
+
+	// 0x12, 			// bLength: Length
+	// TUSB_DESC_DEVICE,  	// bDescriptorType: Type (Device)
+	// 0x10, 0x01, 		// bcdUSB: Spec
+	// TUSB_CLASS_VENDOR_SPECIFIC, // bDeviceClass: Device Class (Let config decide)
+	// 0x00, 			// bDeviceSubClass: Subclass
+	// 0x00, 			// bDeviceProtocol: Device Protocol
+	// 0x08, 			// bMaxPacketSize: Max packet size for EP0 (This has to be 8 because of the USB Low-Speed Standard)
+	// 0x09, 0x12, // idVendor: ID Vendor
+	// 0x03, 0xc3, // idProduct: ID Product
+	// 0x10, 0x01, // bcdDevice: ID Rev
+	// 1, // iManufacturer: Manufacturer string
+	// 2, // iProduct: Product string
+	// 3, // iSerial: Serial string
+	// 1, // bNumConfigurations: Max number of configurations
+
+	USB_DEVICE_DESCRIPTOR_INIT(
+		USB_1_1,	/* bcdUSB */
+		0xFF,		/* bDeviceClass */
+		0x00,		/* bDeviceSubClass */
+		0x00,		/* bDeviceProtocol */
+		0x08,		/* bMaxPacketSize */
+		VENDOR_ID,	/* idVendor */
+		PRODUCT_ID,	/* idProduct */
+		USB_1_1,	/* bcdDevice */
+		1		/* bNumConfigurations */
+	),
 };
 
 static const uint8_t config_descriptor[] = {
 	// configuration descriptor, USB spec 9.6.3, page 264-266, Table 9-10
 	// based on https://gist.github.com/tai/acd59b125a007ad47767
 
-	0x09,                        // bLength;
+#if 0
+	0x09,                     // bLength;
 	TUSB_DESC_CONFIGURATION,  // bDescriptorType;
-	// 9 + 9 + 7 + 7, 0x00,                 // wTotalLength
-	25 + 16, 0x00,                 // wTotalLength
+	25 + 16, 0x00,            // wTotalLength
 	0x02,                     // bNumInterfaces (Normally 1)
 	0x01,                     // bConfigurationValue
 	0x00,                     // iConfiguration
 	0x80,                     // bmAttributes (was 0xa0)
 	0x64,                     // bMaxPower (200mA)
+#else
+	USB_CONFIG_DESCRIPTOR_INIT(
+		9 + 9 + 7 + 9 + 7,	/* bLength */
+		0x02,			/* bNumInterfaces */
+		0x01,			/* bConfigurationValue */
+		0x80,			/* bmAttributes */
+		0x64			/* bMaxPower */
+	),
+#endif
 
-	0x09,                        // bLength
-	TUSB_DESC_INTERFACE,      // bDescriptorType
-	0,                        // bInterfaceNumber (unused, would normally be used for HID)
-	0,                        // bAlternateSetting
-	1,                        // bNumEndpoints
-	TUSB_CLASS_VENDOR_SPECIFIC,           // bInterfaceClass    (CDC)
-	0x00,  // bInterfaceSubClass (ABSTRACT CONTROL MODEL)
-	0x00,               // bInterfaceProtocol (V25TER_PROTOCOL)
-	0x00,                     // iInterface (For getting the other descriptor)
+#if 0
+	0x09,				// bLength
+	TUSB_DESC_INTERFACE,		// bDescriptorType
+	0,				// bInterfaceNumber (unused, would normally be used for HID)
+	0,				// bAlternateSetting
+	1,				// bNumEndpoints
+	TUSB_CLASS_VENDOR_SPECIFIC,	// bInterfaceClass    (CDC)
+	0x00,  				// bInterfaceSubClass (ABSTRACT CONTROL MODEL)
+	0x00,				// bInterfaceProtocol (V25TER_PROTOCOL)
+	0x00,				// iInterface (For getting the other descriptor)
+#else
+	USB_INTERFACE_DESCRIPTOR_INIT(
+		0x00,		/* bInterfaceNumber */
+		0x00,		/* bAlternateSetting */
+		0x01,		/* bNumEndpoints */
+		0xFF,		/* bInterfaceClass */
+		0x00,		/* bInterfaceSubClass */
+		0x00,		/* bInterfaceProtocol */
+		0x00		/* iInterface */
+	),
+#endif
 
 	// 0x05,
 	// TUSB_DESC_CS_INTERFACE,
@@ -87,13 +125,23 @@ static const uint8_t config_descriptor[] = {
 	// CDC_FUNC_DESC_CALL_MANAGEMENT,
 	// 0x02, 0x01, // CS_INTERFACE (Management) (CDC_FUNC_DESCR_CALL_MGMNT)
 
-	7,                    // endpoint descriptor (For endpoint 1)
+#if 0
+	0x07,                 // endpoint descriptor (For endpoint 1)
 	TUSB_DESC_ENDPOINT,   // Endpoint Descriptor (Must be 5)
 	0x81,                 // Endpoint Address
 	0x03,                 // Attributes
 	0x08,	0x00,         // Size
 	1,                    // Interval
+#else
+	USB_ENDPOINT_DESCRIPTOR_INIT(
+		0x81,
+		0x03,
+		0x08,
+		0x01
+	),
+#endif
 
+#if 0
 	0x09,
 	TUSB_DESC_INTERFACE,
 	1, 			// interface index
@@ -103,14 +151,33 @@ static const uint8_t config_descriptor[] = {
 	0x00,		//interface sub-class = unused (SHOULD ALWAYS BE ZERO BY SPEC)
 	0x00,		// interface protocol code class = None  <<<<<<<<< THIS IS MEGA SUS.
 	0,			// interface descriptor string index
+#else
+	USB_INTERFACE_DESCRIPTOR_INIT(
+		0x00,		/* bInterfaceNumber */
+		0x00,		/* bAlternateSetting */
+		0x01,		/* bNumEndpoints */
+		0xFF,		/* bInterfaceClass */
+		0x00,		/* bInterfaceSubClass */
+		0x00,		/* bInterfaceProtocol */
+		0x00		/* iInterface */
+	),
+#endif
 
-	7,            // endpoint descriptor (For endpoint 1)
+#if 0
+	0x07,         // endpoint descriptor (For endpoint 1)
 	0x05,         // Endpoint Descriptor (Must be 5)
 	0x02,         // Endpoint Address
 	0x03,         // Attributes
 	0x08,	0x00, // Size
 	1,            // Interval
-
+#else
+	USB_ENDPOINT_DESCRIPTOR_INIT(
+		0x02,
+		0x03,
+		0x08,
+		0x01
+	),
+#endif
 	// 7,            // endpoint descriptor (For endpoint 1)
 	// 0x05,         // Endpoint Descriptor (Must be 5)
 	// 0x83,         // Endpoint Address
