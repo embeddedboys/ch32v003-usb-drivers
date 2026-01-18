@@ -8,3 +8,5 @@
 *.hex
 *.lst
 *.map
+
+compile_commands.json

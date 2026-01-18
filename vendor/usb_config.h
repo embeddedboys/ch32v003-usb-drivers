@@ -11,10 +11,12 @@
 #define USB_PIN_DPU 5
 #define USB_PORT D
 
-#define RV003USB_HANDLE_IN_REQUEST 1
-#define RV003USB_OTHER_CONTROL     1
-#define RV003USB_HANDLE_USER_DATA  1
-#define RV003USB_HID_FEATURES      0
+#define RV003USB_HANDLE_IN_REQUEST   1
+#define RV003USB_OTHER_CONTROL       1
+#define RV003USB_HANDLE_USER_DATA    1
+#define RV003USB_HID_FEATURES        0
+#define RV003USB_SUPPORT_CONTROL_OUT 0
+
 #define RV003USB_EVENT_DEBUGGING   1
 
 #ifndef __ASSEMBLER__
@@ -134,7 +136,7 @@ static const uint8_t config_descriptor[] = {
 	1,                    // Interval
 #else
 	USB_ENDPOINT_DESCRIPTOR_INIT(
-		0x81,
+		0x01,
 		0x03,
 		0x08,
 		0x01
@@ -153,7 +155,7 @@ static const uint8_t config_descriptor[] = {
 	0,			// interface descriptor string index
 #else
 	USB_INTERFACE_DESCRIPTOR_INIT(
-		0x00,		/* bInterfaceNumber */
+		0x01,		/* bInterfaceNumber */
 		0x00,		/* bAlternateSetting */
 		0x01,		/* bNumEndpoints */
 		0xFF,		/* bInterfaceClass */
