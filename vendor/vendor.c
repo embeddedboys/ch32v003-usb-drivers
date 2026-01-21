@@ -12,7 +12,7 @@
 static struct usb_urb simple_usb_requests[8];
 static volatile uint8_t head = 0, tail = 0;
 
-static void simple_usb_event_push(struct usb_urb urb)
+static void simple_usb_request_push(struct usb_urb urb)
 {
 	simple_usb_requests[head] = urb;
 	head = SIMPLE_USB_REQUEST_NEXT(head);
@@ -21,7 +21,7 @@ static void simple_usb_event_push(struct usb_urb urb)
 		tail = SIMPLE_USB_REQUEST_NEXT(tail);
 }
 
-struct usb_urb *simple_usb_event_pop(void)
+struct usb_urb *simple_usb_request_pop(void)
 {
 	int event = tail;
 
@@ -121,7 +121,7 @@ int main()
 			printf("0x%lx 0x%lx 0x%lx 0x%lx\n", ue[0], ue[1], ue[2],
 			       ue[3]);
 
-		// struct usb_urb *req = simple_usb_event_pop();
+		// struct usb_urb *req = simple_usb_request_pop();
 
 		// if (req)
 		// 	usb_handle_control_out_request(req);
@@ -174,7 +174,6 @@ void usb_handle_other_control_message(struct usb_endpoint *e, struct usb_urb *s,
 	if (s->wRequestTypeLSBRequestMSB & USB_CONTROL_IN_EP0)
 		usb_handle_control_in_request(e, s);
 	else
-		// simple_usb_event_push(*s);
 		usb_handle_control_out_request(s);
 }
 
