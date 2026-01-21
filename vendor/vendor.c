@@ -35,8 +35,9 @@ struct usb_urb *simple_usb_request_pop(void)
 
 void handle_gpio_out_request(u16 cmd, u16 data)
 {
-	u8 idx = data >> 8;
 	u8 state = data & 0xff;
+	u8 idx = data >> 8;
+
 	LogUEvent(SysTick->CNT, cmd, data, 0);
 
 	switch (cmd) {
@@ -50,14 +51,14 @@ void handle_gpio_out_request(u16 cmd, u16 data)
 
 u32 handle_gpio_in_request(u16 cmd, u16 data)
 {
-	u32 val = 0;
 	u8 idx = data >> 8;
+	u32 state = 0;
 
 	LogUEvent(SysTick->CNT, cmd, data, 0);
 
 	switch (cmd) {
 	case V003_GPIO_GET:
-		val = funDigitalRead(idx);
+		state = funDigitalRead(idx);
 		break;
 	default:
 		break;
