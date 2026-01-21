@@ -24,83 +24,89 @@ PD5 = 53
 PD6 = 54
 PD7 = 55
 
-dev = usb.core.find(idVendor=0x1209, idProduct=0xC303)
-if dev is None:
-    raise ValueError("Device not found")
 
-# get an endpoint instance
-cfg = dev.get_active_configuration()
-intf = cfg[(0, 0)]
-# print(intf)
+class Gpio:
+    V003_GPIO_MODULE_ID = 0x01
 
-ep = usb.util.find_descriptor(
-    intf,
-    # match the first OUT endpoint
-    custom_match=lambda e: usb.util.endpoint_direction(e.bEndpointAddress)
-    == usb.util.ENDPOINT_OUT,
-)
+    def __init__(self, dev):
+        self.V003_GPIO_SET = self.V003_GPIO_CMD(0x06)
+        self.V003_GPIO_GET = self.V003_GPIO_CMD(0x07)
 
-assert ep is not None
+        self.dev = dev
+        # get an endpoint instance
+        cfg = dev.get_active_configuration()
+        intf = cfg[(0, 0)]
+        # print(intf)
 
-V003_GPIO_MODULE_ID = 0x01
+        self.ep = usb.util.find_descriptor(
+            intf,
+            # match the first OUT endpoint
+            custom_match=lambda e: usb.util.endpoint_direction(e.bEndpointAddress)
+            == usb.util.ENDPOINT_OUT,
+        )
 
+        assert self.ep is not None
 
-def V003_CMD(cmd, id):
-    return cmd | id << 8
+    def V003_CMD(self, cmd, id):
+        return cmd | id << 8
 
+    def V003_GPIO_CMD(self, cmd):
+        return self.V003_CMD(cmd, self.V003_GPIO_MODULE_ID)
 
-def V003_GPIO_CMD(cmd):
-    return V003_CMD(cmd, V003_GPIO_MODULE_ID)
+    def V003_GPIO_VAL(self, val, idx):
+        return val | idx << 8
 
+    def transfer(self, val, idx, len):
+        is_out: bool = False if len > 0 else True
+        type = 0x40 if is_out else 0xC0
+        # send vendor specific request type and data in ctrl transfer
+        # will handled by `usb_handle_other_control_message`
+        data = self.dev.ctrl_transfer(
+            type,  # bmRequestType
+            0x00,  # bRequest
+            val,  # wValue | val & idx
+            idx,  # wIndex | cmd & id
+            len,  # wLength
+        )
+        return data if is_out else data[0]
 
-def V003_GPIO_VAL(val, idx):
-    return val | idx << 8
+    def gpio_set(self, idx, state):
+        return self.transfer(
+            self.V003_GPIO_VAL(state, idx),
+            self.V003_GPIO_SET,
+            0,  # don't need in OUT transfer
+        )
 
-
-V003_GPIO_SET = V003_GPIO_CMD(0x06)
-V003_GPIO_GET = V003_GPIO_CMD(0x07)
-
-ctrl_buf = range(8)
-
-# send vendor specific request type and data in ctrl transfer
-# will handled by `usb_handle_other_control_message`
-dev.ctrl_transfer(
-    0x40,  # bmRequestType
-    0x00,  # bRequest
-    V003_GPIO_VAL(1, PC0),  # wValue | val & idx
-    V003_GPIO_SET,  # wIndex | cmd & id
-    None,  # ctrl_buf
-)
-
-data = dev.ctrl_transfer(0xC0, 0x00, V003_GPIO_VAL(0, PC0), V003_GPIO_GET, 1)
-print(f"pin {PC0} state : {data[0]}")
-
-time.sleep(0.3)
-
-dev.ctrl_transfer(
-    0x40,  # bmRequestType
-    0x00,  # bRequest
-    V003_GPIO_VAL(0, PC0),  # wValue | val & idx
-    V003_GPIO_SET,  # wIndex | cmd & id
-    None,  # ctrl_buf
-)
-
-data = dev.ctrl_transfer(0xC0, 0x00, V003_GPIO_VAL(0, PC0), V003_GPIO_GET, 1)
-print(f"pin {PC0} state : {data[0]}")
+    def gpio_get(self, idx):
+        return self.transfer(
+            self.V003_GPIO_VAL(0, idx),
+            self.V003_GPIO_GET,
+            1,  # wLength to read
+        )
 
 
-def blink(val, idx):
-    dev.ctrl_transfer(
-        0x40,  # bmRequestType
-        0x00,  # bRequest
-        V003_GPIO_VAL(val, idx),  # wValue | val & idx
-        V003_GPIO_SET,  # wIndex | cmd & id
-        None,  # ctrl_buf
-    )
-
-
-while True:
-    blink(1, PC0)
+def blink(dev):
+    dev.gpio_set(PC0, 1)
     time.sleep(0.5)
-    blink(0, PC0)
+    dev.gpio_set(PC0, 0)
     time.sleep(0.5)
+
+
+def main():
+    dev = usb.core.find(idVendor=0x1209, idProduct=0xC303)
+    if dev is None:
+        raise ValueError("Device not found")
+
+    dev = Gpio(dev)
+
+    dev.gpio_set(PC0, 1)
+    print(f"pin {PC0} state : {dev.gpio_get(PC0)}")
+    dev.gpio_set(PC0, 0)
+    print(f"pin {PC0} state : {dev.gpio_get(PC0)}")
+
+    while True:
+        blink(dev)
+
+
+if __name__ == "__main__":
+    main()
