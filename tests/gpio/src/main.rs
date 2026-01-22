@@ -1,4 +1,4 @@
-use rusb::{Context, DeviceHandle, Direction, Recipient, RequestType, UsbContext};
+use rusb::Context;
 use std::thread;
 use std::time::Duration;
 
@@ -32,9 +32,9 @@ mod usb_peri_bridge {
         pub const PD7: u8 = 55;
     }
 
-    const type_vendor_out: u8 =
+    const TYPE_VENDOR_OUT: u8 =
         rusb::request_type(Direction::Out, RequestType::Vendor, Recipient::Device);
-    const type_vendor_in: u8 =
+    const TYPE_VENDOR_IN: u8 =
         rusb::request_type(Direction::In, RequestType::Vendor, Recipient::Device);
 
     pub struct UsbGpio<T: UsbContext> {
@@ -54,13 +54,14 @@ mod usb_peri_bridge {
             Ok(UsbGpio { handle })
         }
 
+        #[allow(dead_code)]
         pub fn new(handle: DeviceHandle<T>) -> Self {
             UsbGpio { handle }
         }
 
         pub fn set_gpio(&mut self, idx: u8, state: u8) -> rusb::Result<()> {
             _ = self.handle.write_control(
-                type_vendor_out,
+                TYPE_VENDOR_OUT,
                 0x00,
                 u16::from_le_bytes([state, idx]),
                 0x106,
@@ -73,7 +74,7 @@ mod usb_peri_bridge {
         pub fn get_gpio(&mut self, idx: u8) -> rusb::Result<u8> {
             let mut data: [u8; 1] = [0];
             _ = self.handle.read_control(
-                type_vendor_in,
+                TYPE_VENDOR_IN,
                 0x00,
                 u16::from_le_bytes([0x00, idx]),
                 0x107,
