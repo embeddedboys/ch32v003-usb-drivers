@@ -2,8 +2,8 @@ use rusb::Context;
 use std::thread;
 use std::time::Duration;
 
-use crate::usb_peri_bridge::UsbGpio;
 use crate::usb_peri_bridge::gpio_pins::PC0;
+use crate::usb_peri_bridge::UsbGpio;
 
 mod usb_peri_bridge {
     use std::time::Duration;
@@ -100,11 +100,11 @@ fn main() -> rusb::Result<()> {
         gpio.set_gpio(PC0, 1)?;
         println!("gpio {}, state : {}", PC0, gpio.get_gpio(PC0)?);
 
-        thread::sleep(Duration::from_millis(200));
+        thread::sleep(Duration::from_millis(500));
 
         gpio.set_gpio(PC0, 0)?;
         println!("gpio {}, state : {}", PC0, gpio.get_gpio(PC0)?);
 
-        thread::sleep(Duration::from_millis(200));
+        thread::sleep(Duration::from_millis(500));
     }
 }
