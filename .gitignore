@@ -2,6 +2,7 @@
 .pio
 .venv
 .cache
+__pycache__
 
 *.elf
 *.bin
