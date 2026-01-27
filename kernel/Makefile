@@ -19,3 +19,5 @@ test: all
 
 obj-m += $(MODULE_NAME).o
 $(MODULE_NAME)-y += gpio.o
+
+obj-m += blink.o

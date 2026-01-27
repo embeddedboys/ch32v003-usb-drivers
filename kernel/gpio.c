@@ -10,13 +10,13 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/slab.h>
-#include <linux/fb.h>
 #include <linux/usb.h>
 #include <linux/usb/input.h>
-#include <linux/hid.h>
 #include <linux/input.h>
 #include <linux/mutex.h>
 #include <linux/timer.h>
+#include <linux/kthread.h>
+#include <linux/gpio/driver.h>
 
 #include "gpio.h"
 
@@ -31,11 +31,13 @@ struct v003_usb_dev {
 	bool disconnect;
 	wait_queue_head_t disconnect_wq;
 	spinlock_t disconnect_lock;
+
+	/* GPIO */
+	struct gpio_chip gc;
+	u16 ngpio;
 };
 
-static struct task_struct *blink_kthread;
-
-static int v003_usb_transfer(struct v003_usb_dev *v003, u16 val, u16 idx)
+static int v003_usb_tx(struct v003_usb_dev *v003, u16 val, u16 idx)
 {
 	struct usb_device *udev = v003->udev;
 
@@ -45,16 +47,91 @@ static int v003_usb_transfer(struct v003_usb_dev *v003, u16 val, u16 idx)
 	return 0;
 }
 
-static int blink_thread_func(void *data)
+static u32 v003_usb_rx(struct v003_usb_dev *v003, u16 val, u16 idx)
 {
-	struct v003_usb_dev *v003 = data;
+	struct usb_device *udev = v003->udev;
+	u32 read;
 
-	while (!kthread_should_stop()) {
-		v003_usb_transfer(v003, V003_GPIO_VAL(PC0, 1), V003_GPIO_SET);
-		msleep(200);
-		v003_usb_transfer(v003, V003_GPIO_VAL(PC0, 0), V003_GPIO_SET);
-		msleep(200);
-	}
+	usb_control_msg_recv(udev, usb_rcvctrlpipe(udev, 0x00), 0x00, 0xC0, val,
+			     idx, &read, sizeof(read), V003_USB_TIMEOUT,
+			     GFP_KERNEL);
+
+	return read;
+}
+
+static void v003_usb_gpio_set(struct gpio_chip *gc, unsigned int offset,
+			      int value)
+{
+	struct v003_usb_dev *v003 = gpiochip_get_data(gc);
+
+	dev_info(gc->parent, "%s, offset : %d, value : %d\n", __func__, offset,
+		 value);
+
+	v003_usb_tx(v003, V003_GPIO_VAL(offset, value), V003_GPIO_SET);
+}
+
+static int v003_usb_gpio_get(struct gpio_chip *gc, unsigned int offset)
+{
+	struct v003_usb_dev *v003 = gpiochip_get_data(gc);
+	u32 state;
+
+	dev_info(gc->parent, "%s, offset : %d\n", __func__, offset);
+	state = v003_usb_rx(v003, V003_GPIO_VAL(offset, 0x00), V003_GPIO_GET);
+
+	return state;
+}
+
+static int v003_usb_gpio_request(struct gpio_chip *gc, unsigned int offset)
+{
+	struct v003_usb_dev *v003 = gpiochip_get_data(gc);
+
+	dev_info(gc->parent, "%s, offset : %d\n", __func__, offset);
+	v003_usb_tx(v003, V003_GPIO_VAL(offset, 0x00), V003_GPIO_REQUEST);
+
+	return 0;
+}
+
+static void v003_usb_gpio_free(struct gpio_chip *gc, unsigned offset)
+{
+	struct v003_usb_dev *v003 = gpiochip_get_data(gc);
+
+	dev_info(gc->parent, "%s, offset : %d\n", __func__, offset);
+	v003_usb_tx(v003, V003_GPIO_VAL(offset, 0x00), V003_GPIO_FREE);
+}
+
+static int v003_usb_gpio_get_direction(struct gpio_chip *gc, unsigned offset)
+{
+	struct v003_usb_dev *v003 = gpiochip_get_data(gc);
+	u32 state;
+
+	state = v003_usb_rx(v003, V003_GPIO_VAL(offset, 0x00),
+			    V003_GPIO_GET_DIRECTION);
+	dev_info(gc->parent, "%s, offset : %d, value : %d\n", __func__, offset,
+		 state);
+
+	return state > 0 ? GPIO_LINE_DIRECTION_IN : GPIO_LINE_DIRECTION_OUT;
+}
+
+static int v003_usb_gpio_direction_input(struct gpio_chip *gc, unsigned offset)
+{
+	struct v003_usb_dev *v003 = gpiochip_get_data(gc);
+
+	dev_info(gc->parent, "%s, offset : %d\n", __func__, offset);
+	v003_usb_tx(v003, V003_GPIO_VAL(offset, 0x00),
+		    V003_GPIO_DIRECTION_INPUT);
+
+	return 0;
+}
+
+static int v003_usb_gpio_direction_output(struct gpio_chip *gc, unsigned offset,
+					  int value)
+{
+	struct v003_usb_dev *v003 = gpiochip_get_data(gc);
+
+	dev_info(gc->parent, "%s, offset : %d, value : %d\n", __func__, offset,
+		 value);
+	v003_usb_tx(v003, V003_GPIO_VAL(offset, value),
+		    V003_GPIO_DIRECTION_OUTPUT);
 
 	return 0;
 }
@@ -69,7 +146,11 @@ static int v003_usb_probe(struct usb_interface *intf,
 	// struct usb_endpoint_descriptor *int_in;
 	// struct usb_endpoint_descriptor *int_out;
 	struct v003_usb_dev *v003;
-	// int ret;
+	int ret;
+
+	/* We only care about intf 0 since we don't have any work on intf 1 */
+	if (intf->cur_altsetting->desc.bInterfaceNumber != 0)
+		return 0;
 
 	// ret = usb_find_common_endpoints(intf->cur_altsetting, NULL, NULL,
 	// 				&int_in, &int_out);
@@ -79,7 +160,7 @@ static int v003_usb_probe(struct usb_interface *intf,
 	// 	return ret;
 	// }
 
-	v003 = kzalloc(sizeof(*v003), GFP_KERNEL);
+	v003 = devm_kzalloc(dev, sizeof(*v003), GFP_KERNEL);
 	if (!v003)
 		return -ENOMEM;
 
@@ -89,21 +170,34 @@ static int v003_usb_probe(struct usb_interface *intf,
 	init_waitqueue_head(&v003->disconnect_wq);
 	spin_lock_init(&v003->disconnect_lock);
 
-	blink_kthread = kthread_run(blink_thread_func, v003, "blink");
-	if (IS_ERR(blink_kthread))
-		return PTR_ERR(blink_kthread);
+	v003->gc.label = DRV_NAME;
+	v003->gc.parent = dev;
+	v003->gc.owner = THIS_MODULE;
+	v003->gc.base = -1;
+	v003->gc.ngpio = V003_NGPIO;
+	v003->gc.can_sleep = true;
+	v003->gc.set = v003_usb_gpio_set;
+	v003->gc.get = v003_usb_gpio_get;
+	v003->gc.request = v003_usb_gpio_request;
+	v003->gc.free = v003_usb_gpio_free;
+	v003->gc.get_direction = v003_usb_gpio_get_direction;
+	v003->gc.direction_input = v003_usb_gpio_direction_input;
+	v003->gc.direction_output = v003_usb_gpio_direction_output;
 
-	set_current_state(TASK_INTERRUPTIBLE);
-	schedule_timeout(msecs_to_jiffies(2000));
-	kthread_stop(blink_kthread);
-	blink_kthread = NULL;
+	ret = devm_gpiochip_add_data(dev, &v003->gc, v003);
+	if (ret < 0) {
+		dev_err(dev, "failed to add gpio chip: %d\n", ret);
+		return ret;
+	}
 
-	dev_info(dev, "exit\n");
-	return -1;
+	dev_info(dev, "ready\n");
+	return 0;
 }
 
 static void v003_usb_disconnect(struct usb_interface *intf)
 {
+	if (intf->cur_altsetting->desc.bInterfaceNumber != 0)
+		return;
 }
 
 static int v003_usb_suspend(struct usb_interface *intf, pm_message_t message)

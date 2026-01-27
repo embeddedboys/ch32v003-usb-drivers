@@ -20,6 +20,8 @@
 #define PD6 54
 #define PD7 55
 
+#define V003_NGPIO 55
+
 #define V003_CMD(cmd, id) ((cmd) | (id << 8))
 #define V003_CMD_GET_ID(cmd) (cmd >> 8)
 #define V003_CMD_GET_CMD(cmd) (cmd & 0xFF)
@@ -29,6 +31,11 @@
 
 #define V003_GPIO_SET V003_GPIO_CMD(0x06)
 #define V003_GPIO_GET V003_GPIO_CMD(0x07)
+#define V003_GPIO_REQUEST V003_GPIO_CMD(0x08)
+#define V003_GPIO_FREE V003_GPIO_CMD(0x09)
+#define V003_GPIO_GET_DIRECTION V003_GPIO_CMD(0x0A)
+#define V003_GPIO_DIRECTION_INPUT V003_GPIO_CMD(0x0B)
+#define V003_GPIO_DIRECTION_OUTPUT V003_GPIO_CMD(0x0C)
 
 #define V003_GPIO_VAL(idx, val) (idx << 8 | val)
 
