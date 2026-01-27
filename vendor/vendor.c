@@ -64,7 +64,7 @@ u32 handle_gpio_in_request(u16 cmd, u16 data)
 		break;
 	}
 
-	return val;
+	return state;
 }
 
 void usb_handle_control_out_request(struct usb_urb *urb)
@@ -82,27 +82,20 @@ void usb_handle_control_out_request(struct usb_urb *urb)
 	}
 }
 
-char *test = "testtest";
-u8 control_in_buf[4];
-
 void usb_handle_control_in_request(struct usb_endpoint *e, struct usb_urb *s)
 {
-	u32 val = 0;
-
-	// e->opaque = (uint8_t *)test;
-	// e->max_len = s->wLength;
+	static u32 val = 0;
 
 	switch (V003_CMD_GET_ID(s->wIndex)) {
 	case V003_GPIO_MODULE_ID:
 		val = handle_gpio_in_request(s->wIndex, s->wValue);
-		memcpy(control_in_buf, &val, sizeof(val));
 		break;
 	default:
 		/* unsupported module request */
 		break;
 	}
 
-	e->opaque = control_in_buf;
+	e->opaque = (u8 *)&val;
 	e->max_len = s->wLength;
 }
 
