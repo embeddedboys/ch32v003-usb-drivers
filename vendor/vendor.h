@@ -1,20 +1,22 @@
 #ifndef __VENDOR_H
 #define __VENDOR_H
 
-#include "gpio.h"
+#include "ch32fun.h"
 
-#define EP0_IN_ADDR (USB_EP_DIR_IN | 0)
+#define __maybe_unused __attribute__((unused))
+
+#define EP0_IN_ADDR  (USB_EP_DIR_IN | 0)
 #define EP0_OUT_ADDR (USB_EP_DIR_OUT | 0)
 #define EP1_OUT_ADDR (USB_EP_DIR_OUT | 1)
-#define EP2_IN_ADDR (USB_EP_DIR_IN | 2)
+#define EP2_IN_ADDR  (USB_EP_DIR_IN | 2)
 #define EP3_OUT_ADDR (USB_EP_DIR_OUT | 3)
-#define EP4_IN_ADDR (USB_EP_DIR_IN | 4)
+#define EP4_IN_ADDR  (USB_EP_DIR_IN | 4)
 
 #define REQ_EP1_OUT 0x02
-#define REQ_EP2_IN 0x03
+#define REQ_EP2_IN  0x03
 
-#define V003_CMD(cmd, id) ((cmd) | (id << 8))
-#define V003_CMD_GET_ID(cmd) (cmd >> 8)
+#define V003_CMD(cmd, id)     ((cmd) | (id << 8))
+#define V003_CMD_GET_ID(cmd)  (cmd >> 8)
 #define V003_CMD_GET_CMD(cmd) (cmd & 0xFF)
 
 struct usb_ctrl_msg_ctx {
