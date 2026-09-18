@@ -20,11 +20,17 @@
 #define PD6 54
 #define PD7 55
 
-#define V003_NGPIO 55
+#define V003_NGPIO 56
 
 #define V003_CMD(cmd, id) ((cmd) | (id << 8))
 #define V003_CMD_GET_ID(cmd) (cmd >> 8)
 #define V003_CMD_GET_CMD(cmd) (cmd & 0xFF)
+
+#define V003_GENERIC_MODULE_ID 0x00
+#define V003_GENERIC_CMD(cmd) V003_CMD(cmd, V003_GENERIC_MODULE_ID)
+#define V003_GET_DEVICE_VER V003_GENERIC_CMD(0x30)
+#define V003_GET_DEVICE_SN V003_GENERIC_CMD(0x31)
+#define V003_GET_EP_STATS V003_GENERIC_CMD(0x32)
 
 #define V003_GPIO_MODULE_ID 0x01
 #define V003_GPIO_CMD(cmd) V003_CMD(cmd, V003_GPIO_MODULE_ID)
