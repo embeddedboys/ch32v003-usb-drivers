@@ -27,6 +27,8 @@ I2C_SLAVE = 0x0703
 I2C_FUNCS = 0x0705
 I2C_RDWR = 0x0707
 I2C_FUNC_I2C = 0x00000001
+I2C_FUNC_SMBUS_QUICK = 0x00010000
+I2C_FUNC_SMBUS_READ_BYTE_DATA = 0x00080000
 I2C_M_RD = 0x0001
 I2C_M_TEN = 0x0010
 I2C_M_NOSTART = 0x4000
@@ -162,10 +164,15 @@ def main():
     bus = Bus(number)
 
     funcs = bus.funcs()
+    info("functionality", f"{funcs:#010x}")
     check("adapter advertises I2C_FUNC_I2C", bool(funcs & I2C_FUNC_I2C), True)
+    check("adapter advertises SMBus quick (i2cdetect needs it)",
+          bool(funcs & I2C_FUNC_SMBUS_QUICK), True)
+    check("adapter advertises SMBus byte data",
+          bool(funcs & I2C_FUNC_SMBUS_READ_BYTE_DATA), True)
     check("adapter does not claim 10 bit addresses",
-          bool(funcs & 0x00010000), False)
-    check("adapter does not claim SMBus emulation",
+          bool(funcs & 0x00000002), False)
+    check("adapter does not claim SMBus block transfers",
           bool(funcs & 0x0F000000), False)
 
     # --- addressing --------------------------------------------------------

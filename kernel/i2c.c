@@ -232,10 +232,28 @@ static int v003_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg *msgs,
 
 static u32 v003_i2c_func(struct i2c_adapter *adap)
 {
-	/* no SMBus emulation on purpose: the emulated block read expects to
-	 * continue a transfer with I2C_M_NOSTART, which a request per
-	 * transaction firmware cannot do */
-	return I2C_FUNC_I2C;
+	/*
+	 * I2C_FUNC_I2C plus the SMBus transfers that map onto the firmware's
+	 * one-transaction-per-request model.  With no smbus_xfer callback the
+	 * i2c core emulates SMBus on top of master_xfer, and the emulated
+	 * sequences come out as exactly what the firmware already does:
+	 *
+	 *   QUICK            a message with no data, i.e. address + STOP
+	 *   READ_BYTE        a lone read, which the firmware answers from the
+	 *                    device's current address pointer
+	 *   WRITE_BYTE       one data byte after the address
+	 *   *_BYTE_DATA      command byte, repeated START, read/write a byte
+	 *   *_WORD_DATA      the same with two bytes
+	 *
+	 * i2cdetect needs QUICK (or READ_BYTE with -r) to probe at all, which is
+	 * why this is here.  The block sizes are left out deliberately: their
+	 * emulation continues a transfer with I2C_M_NOSTART, and a firmware that
+	 * runs one transaction per request cannot express "keep the bus without
+	 * a START".  Asking for one fails with -EOPNOTSUPP instead of silently
+	 * doing the wrong thing on the wire.
+	 */
+	return I2C_FUNC_I2C | I2C_FUNC_SMBUS_QUICK | I2C_FUNC_SMBUS_BYTE |
+	       I2C_FUNC_SMBUS_BYTE_DATA | I2C_FUNC_SMBUS_WORD_DATA;
 }
 
 static const struct i2c_algorithm v003_i2c_algorithm = {
