@@ -323,15 +323,18 @@ Legend: `[x]` done, `[ ]` open, `[~]` in progress, `[!]` blocked.
 - [x] Added a mutex serialising vendor control transfers, an `offline` flag,
       and `.suspend`/`.resume` handlers so queued gpiolib calls fail fast
       instead of racing a disconnect.
-- [x] Compiles cleanly with `make LLVM=1` (`usb-mfd.ko`, `blink.ko`).
+- [x] Compiles cleanly with `make LLVM=1` (the core plus `v003-gpio.ko`,
+      `v003-i2c.ko`, `v003-spi.ko`).
 - [!] Never loaded on hardware: `insmod`/`rmmod`/`dmesg` need root and this
       sandbox has no usable sudo (`sudo -n` requires a password).
 - [ ] Parked by decision: finish the userspace data path first, the driver is
       awkward to iterate on until then (loading it needs root and a reload
       cycle per change). Everything below is compile-verified only.
-- [ ] `usb-mfd.ko` and `blink.ko` share `DRV_NAME` and both match
-      `1209:c303`, so only one can bind at a time; `blink.c` is a leftover
-      experiment (probe returns `-1` after 1 s) - remove or rename it.
+- [x] `blink.c` is deleted.  It was a leftover experiment that registered
+      itself as `DRV_NAME "v003-usb-mfd"` and matched `1209:c303` like the core
+      does, so with both built only one could bind, and its 1 s probe delay made
+      the failure look like a firmware problem.  It had already been dropped
+      from the build when the core took over; now the file is gone too.
 - [ ] probe discovers EP1-OUT/EP2-OUT/EP3-IN but never submits an URB to them;
       bulk/interrupt data paths are still dead code.
 - [ ] No `get_multiple`/`set_multiple` and no shadow state: one synchronous
