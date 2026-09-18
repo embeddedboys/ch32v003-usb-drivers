@@ -124,7 +124,7 @@ static const uint8_t config_descriptor[] = {
 // #define STR_MANUFACTURER u"cnlohr"
 // #define STR_PRODUCT      u"CDC Tester"
 #define STR_MANUFACTURER u"embeddedboys"
-#define STR_PRODUCT      u"CH32V003 Vendor Spec Tester"
+#define STR_PRODUCT      u"CH32V003 USB Bridge"
 #ifndef STR_SERIAL
 #define STR_SERIAL       u"0000"
 #endif
