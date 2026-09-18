@@ -4,9 +4,26 @@
 #include <string.h>
 
 #include "vendor.h"
+#include "v003_usb_ids.h" /* V003_DEVICE_UID_SIZE, V003_SERIAL_DESC_SIZE */
 #include "gpio.h"
+#if V003_MODULE_SPI
 #include "spi.h"
+#endif
+#if V003_MODULE_I2C
 #include "i2c.h"
+#endif
+#if V003_MODULE_WDG
+#include "wdg.h"
+#endif
+#if V003_MODULE_PWM
+#include "pwm.h"
+#endif
+#if V003_MODULE_ADC
+#include "adc.h"
+#endif
+#if V003_MODULE_UART
+#include "uart.h"
+#endif
 #include "frame.h"
 
 #define V003_HW_ID	 0x200
@@ -23,7 +40,7 @@
 #define VENDOR_DEBUG_EVENTS 0
 #endif
 
-#define SIMPLE_USB_REQUEST_SIZE	     8
+#define SIMPLE_USB_REQUEST_SIZE	     V003_NUM_SIMPLE_REQUESTS
 #define SIMPLE_USB_REQUEST_MASK	     (SIMPLE_USB_REQUEST_SIZE - 1)
 #define SIMPLE_USB_REQUEST_NEXT(idx) ((idx + 1) & SIMPLE_USB_REQUEST_MASK)
 
@@ -32,7 +49,7 @@
  * interrupt, main() pops.  Only the interrupt writes head and the ring
  * slots, only main() writes tail, so no locking is needed - but a full ring
  * must drop the new request instead of moving tail, which belongs to main(). */
-static struct usb_urb simple_usb_requests[8];
+static struct usb_urb simple_usb_requests[SIMPLE_USB_REQUEST_SIZE];
 static volatile uint8_t head = 0, tail = 0;
 static volatile u32 simple_usb_requests_dropped;
 
@@ -63,7 +80,6 @@ static struct usb_urb *simple_usb_request_pop(void)
 }
 
 #define V003_DEVICE_VER 0x1010
-#define V003_DEVICE_SN	0x12345678
 
 static volatile u32 ep_rx_count[4];
 static volatile u32 ep_tx_count[4];
@@ -189,6 +205,97 @@ static volatile u8 ctrl_out_done_slot;
 static volatile u16 ctrl_out_done_len;
 
 /* ------------------------------------------------------------------ */
+/* capability report                                                  */
+/*                                                                    */
+/* A constant in flash: the data stage points straight at it, which   */
+/* costs no RAM and no code (the same trick the descriptors use).      */
+/* ------------------------------------------------------------------ */
+
+static const struct v003_caps device_caps = {
+	.caps = 0
+#if V003_MODULE_GPIO
+		| V003_CAP_GPIO
+#endif
+#if V003_MODULE_SPI
+		| V003_CAP_SPI
+#endif
+#if V003_MODULE_I2C
+		| V003_CAP_I2C
+#endif
+#if V003_MODULE_ADC
+		| V003_CAP_ADC
+#endif
+#if V003_MODULE_PWM
+		| V003_CAP_PWM
+#endif
+#if V003_MODULE_UART
+		| V003_CAP_UART
+#endif
+#if V003_MODULE_WDG
+		| V003_CAP_WDG
+#endif
+#if V003_MODULE_PWR
+		| V003_CAP_PWR
+#endif
+		| V003_CAP_FRAME,
+	.ngpio = V003_NGPIO,
+	#if V003_MODULE_ADC
+	.nadc = V003_ADC_CHANNELS,
+#else
+	.nadc = 0,
+#endif
+#if V003_MODULE_PWM
+	.npwm = V003_PWM_CHANNELS,
+#else
+	.npwm = 0,
+#endif
+#if V003_MODULE_UART
+	.nuart = V003_UART_COUNT,
+#else
+	.nuart = 0,
+#endif
+	.reserved_lo = V003_DEVICE_RESERVED_LO,
+	.reserved_hi = V003_DEVICE_RESERVED_HI,
+};
+
+/* ------------------------------------------------------------------ */
+/* serial number                                                      */
+/*                                                                    */
+/* The descriptor is built at boot out of the factory ESIG unique id, */
+/* so every board reports its own serial number instead of a fixed     */
+/* placeholder.  Only the string lives in RAM (see usb_config.h).      */
+/* ------------------------------------------------------------------ */
+
+uint8_t v003_serial_descriptor[V003_SERIAL_DESC_SIZE];
+
+/* the unique id, copied out of the system memory area once at boot: reading it
+ * from the USB interrupt breaks the bit banged timing (the ISR has a few
+ * microseconds and the ESIG is a slow read), which showed up as the host
+ * failing the transfer with EIO */
+static u8 device_uid[V003_DEVICE_UID_SIZE];
+
+static void serial_from_esig(void)
+{
+	static const char hex[] = "0123456789abcdef";
+	const u8 *uid = (const u8 *)V003_DEVICE_UID_ADDR;
+	int i;
+
+	for (i = 0; i < V003_DEVICE_UID_SIZE; i++)
+		device_uid[i] = uid[i];
+
+	v003_serial_descriptor[0] = V003_SERIAL_DESC_SIZE;
+	v003_serial_descriptor[1] = 3; /* bDescriptorType: string */
+	for (i = 0; i < V003_DEVICE_UID_SIZE; i++) {
+		/* UTF-16LE hex, high nibble first, so the host sees the same
+		 * byte order it gets from V003_GET_DEVICE_UID */
+		v003_serial_descriptor[2 + i * 4 + 0] = hex[uid[i] >> 4];
+		v003_serial_descriptor[2 + i * 4 + 1] = 0;
+		v003_serial_descriptor[2 + i * 4 + 2] = hex[uid[i] & 0x0f];
+		v003_serial_descriptor[2 + i * 4 + 3] = 0;
+	}
+}
+
+/* ------------------------------------------------------------------ */
 /* stack canary                                                       */
 /*                                                                    */
 /* The CH32V003 has 2 kB of RAM: the stack starts at the top and grows */
@@ -285,7 +392,11 @@ u32 v003_generic_in_request(u16 cmd, u16 data)
 	case V003_GET_DEVICE_VER:
 		return V003_DEVICE_VER;
 	case V003_GET_DEVICE_SN:
-		return V003_DEVICE_SN;
+		/* the first word of the factory unique id, so a host that only
+		 * wants an identifier does not have to read 12 bytes; the full
+		 * id is V003_GET_DEVICE_UID */
+		return (u32)device_uid[0] | ((u32)device_uid[1] << 8) |
+		       ((u32)device_uid[2] << 16) | ((u32)device_uid[3] << 24);
 	case V003_GET_EP_STATS:
 		switch (data) {
 		case 0:
@@ -364,12 +475,33 @@ static void usb_handle_control_out_request(struct usb_urb *urb)
 	case V003_GPIO_MODULE_ID:
 		handle_gpio_out_request(urb->wIndex, urb->wValue);
 		break;
+#if V003_MODULE_SPI
 	case V003_SPI_MODULE_ID:
 		handle_spi_out_request(urb->wIndex, urb->wValue);
 		break;
+#endif
+#if V003_MODULE_I2C
 	case V003_I2C_MODULE_ID:
 		handle_i2c_out_request(urb->wIndex, urb->wValue);
 		break;
+#endif
+#if V003_MODULE_WDG
+	case V003_WDG_MODULE_ID:
+		handle_wdg_out_request(urb->wIndex, urb->wValue);
+		break;
+#endif
+#if V003_MODULE_ADC
+	case V003_ADC_MODULE_ID:
+		/* a conversion is too slow for the interrupt, so the request
+		 * only records what to convert and main() runs it */
+		handle_adc_out_request(urb->wIndex, urb->wValue);
+		break;
+#endif
+#if V003_MODULE_UART
+	case V003_UART_MODULE_ID:
+		uart_handle_out_request(urb->wIndex, urb->wValue);
+		break;
+#endif
 	default:
 		/* unsupported module request */
 		break;
@@ -394,12 +526,50 @@ static void usb_handle_control_in_request(struct usb_endpoint *e,
 
 		data = ctrl_out_slots[ctrl_out_done_slot] + 4;
 		len = have < s->wLength ? have : s->wLength;
+#if V003_MODULE_SPI
 	} else if (s->wIndex == V003_SPI_GET_RX) {
 		/* the MISO bytes of the last SPI transfer */
 		u16 have = spi_rx_length();
 
 		data = (u8 *)spi_rx_data();
 		len = have < s->wLength ? have : s->wLength;
+#endif
+	} else if (s->wIndex == V003_GET_CAPABILITIES) {
+		/* straight out of flash, see device_caps */
+		data = (u8 *)&device_caps;
+		len = s->wLength < sizeof(device_caps) ? s->wLength
+						      : sizeof(device_caps);
+	} else if (s->wIndex == V003_GET_DEVICE_UID) {
+		/* the RAM copy serial_from_esig() took at boot - never the ESIG
+		 * area itself, see there */
+		data = device_uid;
+		len = s->wLength < V003_DEVICE_UID_SIZE ? s->wLength
+						       : V003_DEVICE_UID_SIZE;
+#if V003_MODULE_UART
+	} else if (s->wIndex == V003_UART_GET_CFG) {
+		/* the configuration as the device holds it, actual_baud included */
+		const struct v003_uart_cfg *cfg = uart_cfg_state();
+
+		data = (u8 *)cfg;
+		len = s->wLength > sizeof(*cfg) ? sizeof(*cfg) : s->wLength;
+	} else if (s->wIndex == V003_UART_READ) {
+		/* the contiguous run the receiver is holding; a short reply just
+		 * means the ring wrapped and the host asks again */
+		u16 want = s->wValue < s->wLength ? s->wValue : s->wLength;
+
+		len = uart_rx_take(want, &data);
+#endif
+#if V003_MODULE_PWM
+	} else if (s->wIndex == V003_PWM_GET) {
+		/* what the hardware ended up with, for the channel in wValue */
+		const struct v003_pwm_cfg *cfg = pwm_channel_state(s->wValue);
+
+		data = (u8 *)cfg;
+		len = cfg && s->wLength > sizeof(*cfg) ? sizeof(*cfg) : s->wLength;
+		if (!cfg)
+			len = 0;
+#endif
+#if V003_MODULE_I2C && V003_I2C_TRACER
 	} else if (s->wIndex == V003_I2C_GET_TRACE) {
 		/* raw clock trace, two bytes per rising SCL edge */
 		u16 total = i2c_trace_bytes();
@@ -412,12 +582,15 @@ static void usb_handle_control_in_request(struct usb_endpoint *e,
 		len = total - off;
 		if (len > s->wLength)
 			len = s->wLength;
+#endif
+#if V003_MODULE_I2C
 	} else if (s->wIndex == V003_I2C_GET_RX) {
 		/* the bytes read by the last I2C transfer */
 		u16 have = i2c_rx_length();
 
 		data = (u8 *)i2c_rx_data();
 		len = have < s->wLength ? have : s->wLength;
+#endif
 	} else {
 		switch (V003_CMD_GET_ID(s->wIndex)) {
 		case V003_GENERIC_MODULE_ID:
@@ -426,12 +599,38 @@ static void usb_handle_control_in_request(struct usb_endpoint *e,
 		case V003_GPIO_MODULE_ID:
 			val = handle_gpio_in_request(s->wIndex, s->wValue);
 			break;
+#if V003_MODULE_SPI
 		case V003_SPI_MODULE_ID:
 			val = handle_spi_in_request(s->wIndex, s->wValue);
 			break;
+#endif
+#if V003_MODULE_I2C
 		case V003_I2C_MODULE_ID:
 			val = handle_i2c_in_request(s->wIndex, s->wValue);
 			break;
+#endif
+#if V003_MODULE_WDG
+		case V003_WDG_MODULE_ID:
+			val = handle_wdg_in_request(s->wIndex, s->wValue);
+			break;
+#endif
+#if V003_MODULE_PWM
+		case V003_PWM_MODULE_ID:
+			val = handle_pwm_in_request(s->wIndex, s->wValue);
+			break;
+#endif
+#if V003_MODULE_ADC
+		case V003_ADC_MODULE_ID:
+			/* only the result is read here; the conversion itself is
+			 * an OUT request the main loop runs (see vendor/adc.h) */
+			val = handle_adc_in_request(s->wIndex, s->wValue);
+			break;
+#endif
+#if V003_MODULE_UART
+		case V003_UART_MODULE_ID:
+			val = handle_uart_in_request(s->wIndex, s->wValue);
+			break;
+#endif
 		default:
 			/* unsupported module request */
 			break;
@@ -512,10 +711,12 @@ static void ep2_out_cb(u8 *data, int len)
 		return;
 	}
 
+#if V003_MODULE_SPI
 	if (spi_enabled()) {
 		spi_out_bytes(data, len);
 		return;
 	}
+#endif
 
 	ep3_tx_push(data, len);
 }
@@ -525,16 +726,34 @@ static void usb_handle_control_out_data(struct usb_urb *urb, u8 *data, int len)
 {
 	LogUEvent(0xcccc0000 | len, urb->wIndex, urb->wValue, 0);
 
+#if V003_MODULE_SPI
 	/* an SPI transfer uses the payload as MOSI data instead of a request
 	 * extension, and keeps the sampled bytes for V003_SPI_GET_RX */
 	if (urb->wIndex == V003_SPI_TRANSFER) {
 		spi_transfer_bytes(data, len);
 		return;
 	}
+#endif
 
+#if V003_MODULE_I2C
 	/* I2C write/read carry their address and payload in the data stage too */
 	if (i2c_handle_control_data(urb->wIndex, urb->wValue, data, len))
 		return;
+#endif
+
+#if V003_MODULE_PWM
+	if (urb->wIndex == V003_PWM_SET) {
+		pwm_handle_control_data(data, len);
+		return;
+	}
+#endif
+
+#if V003_MODULE_UART
+	if (V003_CMD_GET_ID(urb->wIndex) == V003_UART_MODULE_ID) {
+		uart_handle_control_data(urb->wIndex, data, len);
+		return;
+	}
+#endif
 
 	/* data stage is currently only used for simple request extensions;
 	 * dispatch the request itself as well */
@@ -702,6 +921,13 @@ void usb_handle_other_control_message(struct usb_endpoint *e, struct usb_urb *s,
 int main()
 {
 	SystemInit();
+
+	/* before anything can look at the reset flags, and before usb_setup():
+	 * the serial descriptor has to be ready for enumeration */
+#if V003_MODULE_WDG
+	wdg_reset_cause_capture();
+#endif
+	serial_from_esig();
 
 	stack_canary_paint();
 

@@ -29,6 +29,13 @@
 /* IN -> half period in units of 100 ns */
 #define V003_I2C_GET_CFG V003_I2C_CMD(0x59)
 
+/* The clock tracer exists to debug the bus from the host; it costs 128 bytes of
+ * RAM (64 edges) and is the first thing to drop when a build needs the room:
+ * `make TRACE=0`.  Its commands disappear with it. */
+#ifndef V003_I2C_TRACER
+#define V003_I2C_TRACER 1
+#endif
+
 /* Clock tracer: OUT with wValue != 0 arms it (resets the buffer and starts
  * recording), 0 stops it.  It samples the SDA level at every rising SCL edge -
  * exactly what a slave latches - together with the time since the previous

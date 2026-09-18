@@ -20,6 +20,146 @@
 #define V003_CMD_GET_ID(cmd)  (cmd >> 8)
 #define V003_CMD_GET_CMD(cmd) (cmd & 0xFF)
 
+/* ------------------------------------------------------------------ */
+/* which modules this build contains                                  */
+/*                                                                    */
+/* The chip has 2 kB of RAM, so a firmware that needs a UART ring is  */
+/* not the same binary as one that needs I2C: modules are selected at */
+/* build time (`make MODULES=gpio,i2c,spi`) and the device reports     */
+/* what it ended up with through V003_GET_CAPABILITIES, so a host      */
+/* never probes a module that is not there.                           */
+/* ------------------------------------------------------------------ */
+#ifndef V003_MODULE_GPIO
+#define V003_MODULE_GPIO 1
+#endif
+#ifndef V003_MODULE_SPI
+#define V003_MODULE_SPI 1
+#endif
+#ifndef V003_MODULE_I2C
+#define V003_MODULE_I2C 1
+#endif
+/* ADC1, one conversion per request; the internal reference and calibration
+ * channels make it verifiable without wiring anything up (vendor/adc.h) */
+#ifndef V003_MODULE_ADC
+#define V003_MODULE_ADC 1
+#endif
+/* PWM out of TIM1, two channels on PD2 and PA1 (see vendor/pwm.h for why not
+ * the other two: PC3 and PC4 collide with a spare GPIO and the SPI chip select) */
+#ifndef V003_MODULE_PWM
+#define V003_MODULE_PWM 1
+#endif
+/* USART1 as a byte pipe, remapped to PD0/PD1 because the default mapping is
+ * the USB pull-up line and the boot button on this board (vendor/uart.h) */
+#ifndef V003_MODULE_UART
+#define V003_MODULE_UART 1
+#endif
+/* a watchdog: configure the timeout, feed it, and learn why the chip last
+ * reset.  Three registers and a few bytes of state, no pin, no buffer. */
+#ifndef V003_MODULE_WDG
+#define V003_MODULE_WDG 0
+#endif
+/* power management: sleep/standby entry, wakeup sources, and reporting why the
+ * chip woke.  Small in RAM, but it interacts with the USB link (a sleeping
+ * device stops answering) so it needs its own design pass. */
+#ifndef V003_MODULE_PWR
+#define V003_MODULE_PWR 0
+#endif
+
+/* Depth of the ring the USB interrupt uses to hand zero length vendor OUT
+ * requests to main().  It only has to cover the gap until main() gets there:
+ * each request occupies the wire for a whole low speed control transfer (3 ms)
+ * while main() drains the ring in microseconds, so more than a couple of entries
+ * is RAM spent on a case that does not happen - 8 entries cost 64 of the 2048
+ * bytes.  What does not fit is counted (V003_GET_REQ_DROPS), never silently
+ * moved.  Must be a power of two. */
+#ifndef V003_NUM_SIMPLE_REQUESTS
+#define V003_NUM_SIMPLE_REQUESTS 4
+#endif
+
+/* what the device can do, as reported by V003_GET_CAPABILITIES */
+#define V003_CAP_GPIO  (1u << 0)
+#define V003_CAP_SPI   (1u << 1)
+#define V003_CAP_I2C   (1u << 2)
+#define V003_CAP_ADC   (1u << 3)
+#define V003_CAP_PWM   (1u << 4)
+#define V003_CAP_UART  (1u << 5)
+#define V003_CAP_WDG   (1u << 7)
+#define V003_CAP_PWR   (1u << 8)
+/* the framed protocol on the endpoint data path (V003_SET_FRAME_MODE) */
+#define V003_CAP_FRAME (1u << 6)
+
+/* pins the device itself owns, as flat pin numbers (port * 16 + pin), the same
+ * numbering the GPIO module uses: PC1 = 33, PC5..PC7 = 37..39, PD3..PD6 = 51..54 */
+#define V003_PIN_USB_DP	  51
+#define V003_PIN_USB_DM	  52
+#define V003_PIN_USB_DPU  53
+#define V003_PIN_BOOT_BTN 54
+#define V003_PIN_I2C_SDA  33
+#define V003_PIN_I2C_SCL  34
+#define V003_PIN_SPI_SCK  37
+#define V003_PIN_SPI_MOSI 38
+#define V003_PIN_SPI_MISO 39
+
+/* the 64 bit mask of them, split the way the structure carries it */
+/* PWM: TIM1 channels 1 and 2.  The CH32V003 has no PA8..PA11, so the channels
+ * sit on the pins the default TIM1 remap gives them (CH1 = PD2, CH2 = PA1,
+ * CH3 = PC3, CH4 = PC4); the last two collide with this board's spare GPIO and
+ * the SPI chip select, so only the first two are offered.  Defined even when the
+ * module is off, because the reserved mask below references them. */
+#define V003_PWM_PIN_CH1 50 /* PD2 */
+#define V003_PWM_PIN_CH2 1  /* PA1 */
+#define V003_PWM_CHANNELS 2
+
+/* UART: USART1 with remap 01 (AFIO_PCFR1 bit 21), TX on PD0 and RX on PD1.
+ * Defined even when the module is off, because the reserved mask below
+ * references them - the same reason the PWM pins are here. */
+#define V003_UART_TX_PIN 48 /* PD0 */
+#define V003_UART_RX_PIN 49 /* PD1 */
+
+/* the flat pin space the GPIO module accepts: ports A (0..15), C (32..47) and
+ * D (48..63) of the CH32V003; 16..31 has no port behind it and is reserved so
+ * userspace cannot write into an address that is not a GPIO at all */
+#define V003_NGPIO 56
+
+#define V003_DEVICE_RESERVED_LO						\
+	(0xffff0000u /* 16..31: no port there */ |				\
+	 (V003_MODULE_PWM ? (1u << V003_PWM_PIN_CH2) : 0u))
+#define V003_DEVICE_RESERVED_HI						\
+	((1u << (V003_PIN_USB_DP - 32)) |				\
+	 (1u << (V003_PIN_USB_DM - 32)) |				\
+	 (1u << (V003_PIN_USB_DPU - 32)) |				\
+	 (1u << (V003_PIN_BOOT_BTN - 32)) |				\
+	 (V003_MODULE_I2C ? ((1u << (V003_PIN_I2C_SDA - 32)) |		\
+			     (1u << (V003_PIN_I2C_SCL - 32))) : 0u) |	\
+	 (V003_MODULE_SPI ? ((1u << (V003_PIN_SPI_SCK - 32)) |		\
+			     (1u << (V003_PIN_SPI_MOSI - 32)) |		\
+			     (1u << (V003_PIN_SPI_MISO - 32))) : 0u) |	\
+	 (V003_MODULE_PWM ? (1u << (V003_PWM_PIN_CH1 - 32)) : 0u) |		\
+	 (V003_MODULE_UART ? ((1u << (V003_UART_TX_PIN - 32)) |			\
+			      (1u << (V003_UART_RX_PIN - 32))) : 0u))
+
+/* what a host gets from V003_GET_CAPABILITIES: fixed size, append only, so a
+ * host that knows a shorter version keeps working */
+struct v003_caps {
+	u32 caps;	 /* V003_CAP_* */
+	u8 ngpio;	 /* lines the GPIO module drives */
+	u8 nadc;	 /* ADC channels */
+	u8 npwm;	 /* PWM channels */
+	u8 nuart;	 /* UARTs */
+	u32 reserved_lo; /* pins 0..31 the device owns */
+	u32 reserved_hi; /* pins 32..63 the device owns */
+};
+
+/*
+ * These names and their capability bits are reserved so a host can be written
+ * against them, but a build cannot turn one on until there is code behind it -
+ * the same macro gates the implementation *and* the bit the device reports, so
+ * enabling it silently would advertise a feature that does not exist.
+ */
+#if V003_MODULE_PWR
+#error "pwr has no implementation yet (see TODO.md)"
+#endif
+
 /* Module 0x00: device-wide / generic requests. */
 #define V003_GENERIC_MODULE_ID 0x00
 #define V003_GENERIC_CMD(cmd)  V003_CMD(cmd, V003_GENERIC_MODULE_ID)
@@ -52,6 +192,17 @@
  * find out how long a vendor handler may run before the low speed USB host
  * gives up on the transfer. */
 #define V003_GET_TIMING V003_GENERIC_CMD(0x3f)
+/* IN with a data stage: the factory ESIG unique id, 96 bits (12 bytes), read
+ * straight out of the system memory area at 0x1FFFF7E8 - see chapter 15 of the
+ * reference manual.  The device reports the same value as its USB serial
+ * number string (in hex), so a host can identify a specific board. */
+#define V003_GET_DEVICE_UID V003_GENERIC_CMD(0x3c)
+/* IN with a data stage: struct v003_caps - which modules this build has, how
+ * many channels each offers, and which pins the device owns.  A host uses it
+ * to decide what to talk to instead of assuming; see notes/firmware.md. */
+#define V003_GET_CAPABILITIES V003_GENERIC_CMD(0x3d)
+/* where the unique id lives (ch32fun's ESIG_TypeDef): 0x1FFFF7E8 */
+#define V003_DEVICE_UID_ADDR (&ESIG->UNIID1)
 
 struct usb_ctrl_msg_ctx {
 	u8 msg_len; /* current ctrl msg length */

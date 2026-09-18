@@ -18,11 +18,17 @@
 #define RV003USB_SUPPORT_CONTROL_OUT 1
 
 #define RV003USB_EVENT_DEBUGGING   1
-/* 32 events would eat 512 of the 2048 bytes of RAM.  The stack grows down from
- * 0x20000800 straight into the statics, so an oversized debug ring does not
- * just waste memory, it causes silent corruption of whatever sits at the end
- * of .bss.  8 entries are plenty to see recent activity. */
-#define RV003USB_NUMUEVENTS        8
+/* The ring is a debug capture facility: only our own LogUEvent pushes into it
+ * (the USB stack's state machine does not depend on it) and main() drains it
+ * every loop.  16 bytes per entry out of the same 2048 the receive rings want,
+ * and 32 entries would eat 512 of them - the stack grows down from 0x20000800
+ * straight into the statics, so an oversized ring does not just waste memory,
+ * it causes silent corruption of whatever sits at the end of .bss.  4 entries
+ * (64 bytes) is enough to see what happened; `make UEVENTS=8` brings the
+ * historical depth back for a debugging session. */
+#ifndef RV003USB_NUMUEVENTS
+#define RV003USB_NUMUEVENTS        4
+#endif
 
 #ifndef __ASSEMBLER__
 
@@ -126,9 +132,16 @@ static const uint8_t config_descriptor[] = {
 // #define STR_PRODUCT      u"CDC Tester"
 #define STR_MANUFACTURER u"embeddedboys"
 #define STR_PRODUCT      u"CH32V003 USB Bridge"
-#ifndef STR_SERIAL
-#define STR_SERIAL       u"0000"
-#endif
+
+/*
+ * The serial number is not a literal: it is the factory ESIG unique id (96
+ * bits, chapter 15 of the reference manual) rendered as 24 hex characters by
+ * serial_from_esig() before enumeration, so every board shows its own.  Only
+ * the string itself costs RAM; the descriptor table below stays in flash
+ * because it holds a pointer to this buffer rather than to a literal.
+ */
+#define V003_SERIAL_DESC_SIZE (2 + V003_DEVICE_UID_SIZE * 4)
+extern uint8_t v003_serial_descriptor[V003_SERIAL_DESC_SIZE];
 
 struct usb_string_descriptor_struct {
 	uint8_t bLength;
@@ -150,11 +163,6 @@ const static struct usb_string_descriptor_struct string2 __attribute__((section(
 	3,
 	STR_PRODUCT
 };
-const static struct usb_string_descriptor_struct string3 __attribute__((section(".rodata")))  = {
-	sizeof(STR_SERIAL),
-	3,
-	STR_SERIAL
-};
 
 
 
@@ -171,7 +179,8 @@ const static struct descriptor_list_struct {
 	{0x00000300, (const uint8_t *)&string0, 4},
 	{0x04090301, (const uint8_t *)&string1, sizeof(STR_MANUFACTURER)},
 	{0x04090302, (const uint8_t *)&string2, sizeof(STR_PRODUCT)},
-	{0x04090303, (const uint8_t *)&string3, sizeof(STR_SERIAL)}
+	{0x04090303, (const uint8_t *)v003_serial_descriptor,
+	 V003_SERIAL_DESC_SIZE}
 };
 #define DESCRIPTOR_LIST_ENTRIES ((sizeof(descriptor_list))/(sizeof(struct descriptor_list_struct)) )
 

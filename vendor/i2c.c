@@ -54,6 +54,7 @@ static volatile u32 i2c_wait_us; /* duration of the last WAIT_READY */
 /* cover the address phase of one transaction.                          */
 /* ------------------------------------------------------------------ */
 
+#if V003_I2C_TRACER
 #define I2C_TRACE_ENTRIES 64
 /* the delta is stored in units of this many SysTick ticks (48 MHz core) */
 #define I2C_TRACE_UNIT 64
@@ -94,6 +95,8 @@ static void i2c_trace_edge(int sda)
 	i2c_trace[i2c_trace_n * 2 + 1] = sda ? 1 : 0;
 	i2c_trace_n++;
 }
+#endif /* V003_I2C_TRACER */
+
 
 int i2c_configured(void)
 {
@@ -186,7 +189,9 @@ static void scl_low(void)
 static void scl_release(void)
 {
 	u32 guard = I2C_RISE_TIMEOUT;
+#if V003_I2C_TRACER
 	int was_low = !funDigitalRead(V003_I2C_SCL);
+#endif
 
 	pin_release(V003_I2C_SCL);
 	while (!funDigitalRead(V003_I2C_SCL) && --guard)
@@ -198,8 +203,10 @@ static void scl_release(void)
 	/* Record only *real* rising edges: when SCL is already high (entering a
 	 * START from an idle bus, or a repeated START) there is no edge, and
 	 * logging one would shift every decoded byte by one. */
+#if V003_I2C_TRACER
 	if (was_low)
 		i2c_trace_edge(funDigitalRead(V003_I2C_SDA));
+#endif
 }
 
 static void i2c_start(void)
@@ -553,6 +560,7 @@ void handle_i2c_out_request(u16 cmd, u16 data)
 		scl_release();
 		i2c_bus_prepare();
 		break;
+#if V003_I2C_TRACER
 	case V003_I2C_TRACE:
 		if (data) {
 			i2c_trace_n = 0;
@@ -563,6 +571,7 @@ void handle_i2c_out_request(u16 cmd, u16 data)
 			i2c_trace_on = 0;
 		}
 		break;
+#endif
 	case V003_I2C_SCAN:
 		if (!i2c_on) {
 			i2c_status = V003_I2C_ST_NOT_CONFIGURED;
@@ -628,9 +637,11 @@ u32 handle_i2c_in_request(u16 cmd, u16 data)
 		return i2c_half_100ns;
 	case V003_I2C_GET_WAIT_US:
 		return i2c_wait_us;
+#if V003_I2C_TRACER
 	case V003_I2C_GET_TRACE_INFO:
 		return (u32)i2c_trace_n | ((u32)i2c_trace_overflow << 8) |
 		       ((u32)I2C_TRACE_UNIT << 16);
+#endif
 	default:
 		return 0;
 	}

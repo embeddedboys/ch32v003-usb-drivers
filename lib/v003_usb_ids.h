@@ -32,6 +32,15 @@
 /* this device: the CH32V003 USB to GPIO/I2C/SPI bridge firmware */
 #define V003_USB_PID 0xc303
 
+/*
+ * The serial number string is built at boot out of the factory ESIG unique id
+ * (96 bits, chapter 15 of the reference manual, at 0x1FFFF7E8) rendered as hex,
+ * so every board identifies itself instead of sharing one placeholder.  These
+ * sizes are shared with the firmware, which owns the buffer.
+ */
+#define V003_DEVICE_UID_SIZE  12
+#define V003_SERIAL_DESC_SIZE (2 + V003_DEVICE_UID_SIZE * 4) /* header + UTF-16 */
+
 /* the upstream USB HID bootloader the board is flashed with, for reference
  * (rv003usb / ch32fun): registered to cnlohr */
 #define V003_USB_BOOTLOADER_VID V003_USB_VID
