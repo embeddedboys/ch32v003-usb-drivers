@@ -18,6 +18,11 @@
 #define RV003USB_SUPPORT_CONTROL_OUT 1
 
 #define RV003USB_EVENT_DEBUGGING   1
+/* 32 events would eat 512 of the 2048 bytes of RAM.  The stack grows down from
+ * 0x20000800 straight into the statics, so an oversized debug ring does not
+ * just waste memory, it causes silent corruption of whatever sits at the end
+ * of .bss.  8 entries are plenty to see recent activity. */
+#define RV003USB_NUMUEVENTS        8
 
 #ifndef __ASSEMBLER__
 

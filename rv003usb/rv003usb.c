@@ -21,7 +21,13 @@
 
 #if RV003USB_EVENT_DEBUGGING
 
-#define NUMUEVENTS 32
+/* The ring costs 16 bytes of RAM per entry and CH32V003 boards only have 2 kB
+ * in total, so boards with a real command interface and a deep printf path can
+ * ask for a smaller ring.  Defaults to the historical size. */
+#ifndef RV003USB_NUMUEVENTS
+#define RV003USB_NUMUEVENTS 32
+#endif
+#define NUMUEVENTS RV003USB_NUMUEVENTS
 uint32_t events[4*NUMUEVENTS];
 volatile uint8_t eventhead, eventtail;
 void LogUEvent( uint32_t a, uint32_t b, uint32_t c, uint32_t d )
