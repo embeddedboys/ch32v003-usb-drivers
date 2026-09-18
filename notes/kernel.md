@@ -57,25 +57,75 @@ device is left in raw echo mode for the userspace tests.
   transfer that sleeps.
 - `gpio_chip.set` returns `int` since 6.16, `init_valid_mask()` likewise, and
   `need_valid_mask` no longer exists.
+- A child module for a capability the device does not have simply does not bind
+  (verified with a GPIO-only firmware: `v003-i2c.ko` loaded and sat idle), which
+  is why the capability report is what makes build time selection safe.
+- The child cells are built from the capability report: `v003_add_cells()` walks a
+  name+capability table and adds only what the device says it has (dln2 does the
+  same with its hardware revision check).  A device that predates the command is
+  treated as the original GPIO+I2C+SPI firmware.  Do not put the capability bit
+  in `mfd_cell.id`: that field is the platform device instance number, and using
+  it renamed every child device (`v003-gpio.0`, `v003-i2c.3`).
 - `usb_interrupt_msg()` is synchronous and allocates a message per call. A URB
   pool (dln2 style) would remove some host side latency, but the 3 frame control
   transfer stays hard to beat for a single small result.
 
 ## GPIO child
 
-56 lines (`V003_NGPIO`), `init_valid_mask()` clears the pins the device itself
-uses: 51/52/53 = PD3/PD4/PD5 (D+, D-, the D- pull-up switch) and 54 = PD6 (boot
-button). Userspace must not be able to drive the bus it is talking over, and the
-character device test asserts that those four are refused.
+56 lines (`V003_NGPIO`).  `init_valid_mask()` takes the reserved pins from the
+**core**, which got them from the device's capability report plus its own
+`reserved=<pin>[,<pin>]` parameter - so the mask covers the USB pins (51-54), the
+pins of the enabled modules (PC1/PC2 for I2C, PC5-PC7 for SPI), the flat range
+16..31 that has no port behind it, and anything the driver itself drives (the SPI
+chip select, which the device cannot know about).  The character device test
+asserts that all of them are refused at `request` time with EINVAL.
 
 Reserved lines cost nothing: gpiolib only allocates the mask because
-`init_valid_mask` is set.
+`init_valid_mask` is set, and the report itself is a `const` struct in flash.
 
-**Open**: a chip select pin configured for `v003-spi.ko`, and PC1/PC2 (I2C),
-PC5/PC6/PC7 (SPI) are still offered by the gpiochip. The child drivers claim
-what they use, but the gpiochild's valid mask is built before they probe, so the
-clean fix is a reservation mask in the core (or a `reserved=` parameter on the
-core) - see [TODO.md](../TODO.md).
+`v003-spi.ko` warns when its `cs_pin` is missing from the mask, because then
+userspace can request the line the driver is driving.
+
+## Watchdog child
+
+`v003-wdt.ko` exposes the firmware's IWDG as a `watchdog_device`.  Three things
+had to be learned from the kernel rather than from the datasheet:
+
+- **A watchdog device with no `.stop` callback must set `max_hw_heartbeat_ms`**
+  or `watchdog_register_device()` fails with `-EINVAL` and no log line saying
+  why.  `max_timeout` does not satisfy the check.  The IWDG genuinely cannot be
+  stopped, so the driver has no `.stop` and declares the hardware limit instead
+  (26 s, the most the 12 bit reload and the slowest prescaler can do).
+- **The watchdog API counts in seconds**, not milliseconds: `timeout`,
+  `min_timeout` and `max_timeout` are seconds, while the firmware command takes
+  milliseconds.  Registering with 10000/100/26000 was rejected.
+- The reset cause is read once at probe (the device clears it when answering) and
+  the IWDG bit becomes `WDIOF_CARDRESET` in a per-device copy of
+  `watchdog_info`, which is how a user finds out that the board rebooted on its
+  own.
+
+`min_timeout` is one second: the firmware can go below that, but a whole-second
+API cannot express it.
+
+## PWM child
+
+`v003-pwm.ko` is a `pwm_chip` with the channel count the device reports
+(`npwm` from the capability report, so a firmware without PWM gets no chip),
+allocated with `devm_pwmchip_alloc()` and registered with `devm_pwmchip_add()`.
+Two things bit me:
+
+- **`v003_data_out()` returns the number of bytes it sent on success**, which is
+  the right thing for a transport but not for `.apply()`: returning 12 made the
+  PWM core report a failure for a write that had worked, and the same value would
+  have made every sysfs write fail.  The SPI and I2C children only ever test
+  `ret < 0`, which is why this had not surfaced before.
+- In this kernel `struct pwm_chip` has no `parent` field (the parent comes from
+  `devm_pwmchip_alloc(dev, ...)`) and `chip->dev` is a struct, not a pointer.
+
+Driving a channel through `/sys/class/pwm/` needs root, so the driver carries a
+`selftest=<0|1>` parameter that applies a state and reads it back through the
+same callbacks and logs the result - that is what verifies the ns/permille
+translation.  The firmware side is covered by `scripts/pwm_test.py`.
 
 ## I2C child
 

@@ -19,6 +19,143 @@ Legend: `[x]` done, `[ ]` open, `[~]` in progress, `[!]` blocked.
   itself is the device's answer to a one byte command on a two byte word
   address part.  `tests/i2c_dev_test.py` now asserts the advertised set.
 
+## Room for more modules (ADC, PWM, UART)
+
+- [x] Measured the budget instead of guessing: flash is 51.9 % used (7.9 kB free)
+      and each peripheral wrapper costs ~0.4-1.0 kB, so three more modules fit
+      easily; RAM is the constraint (716 B of statics and 456 B of measured
+      stack margin).  Numbers and the per module table are in notes/firmware.md.
+- [x] `V003_GET_CAPABILITIES` (0x3d): a 16 byte struct through a data stage
+      (append only, so it can grow) with the module mask (`0x47` = gpio, spi,
+      i2c, frame), the channel counts, and the pins the device owns.  It is a
+      `const` in flash pointed at by the data stage, so it costs no RAM.
+      Verified from the host and against the kernel log.
+- [x] Compile time module selection: `make MODULES=gpio,spi,i2c` (default),
+      `make MODULES=gpio,spi`, `make MODULES=gpio`, `make TRACE=0`, with `#if`
+      around the includes, the dispatch cases and the hot path the tracer sits
+      in.  Verified by building four variants (8548/1332 default down to
+      5624/1028 for GPIO only) and by flashing the GPIO-only build, which
+      reports `0x41`, gets one cell and leaves `v003-i2c.ko` idle.
+- [x] Kernel: the core builds its child cells from the capability mask
+      (name+capability table, dln2 style) and a device without the command is
+      treated as the original build; the GPIO child takes the reserved mask from
+      the core, so it now refuses pins 16..31 (no port behind them), the I2C and
+      SPI pins, and the USB pins.  `reserved=<pin>,...` on the core adds pins the
+      *driver* owns (a chip select), and `v003-spi.ko` warns when its `cs_pin` is
+      missing from the mask - that closes the SPI chip select item.
+- [x] The I2C clock tracer is behind `make TRACE=0` (-224 B flash, -136 B RAM,
+      the knob lives in `vendor/i2c.h`).  The UEvent ring size is already a knob
+      (`RV003USB_NUMUEVENTS`); exposing it as a Makefile variable is still open.
+- [x] PWM (`V003_MODULE_PWM`, `V003_CAP_PWM`): TIM1 channels 1 and 2 on PD2 and
+      PA1 (the only two of the four the board has free - the other two are its
+      spare GPIO and the SPI chip select), `PWM_SET`/`PWM_GET`/`PWM_GET_INFO`
+      taking a period in ns and a duty in permille, 32 bit arithmetic so the
+      module costs 592 B of flash instead of 1992 B, and both pins reported as
+      reserved.  Verified with `scripts/pwm_test.py`: four periods read back
+      within 0.01 %, duty 0 % and 100 % measured on the pins through the GPIO
+      module, an out of range channel refused.  The `pwm_chip` child driver is
+      done too (`v003-pwm.ko`, npwm from the capability report, `apply`/
+      `get_state` in ns and permille) and its `selftest=1` round trips a 1 ms
+      period and a 25 % duty through the same callbacks sysfs would use, since
+      exporting a channel needs root.
+- [x] ADC (`V003_MODULE_ADC`, `V003_CAP_ADC`, module id 0x06, commands
+      0x80-0x85): one conversion per request, no buffering, 628 B of flash and
+      12 B of RAM.  `V003_ADC_START` is an OUT request (wValue = channel)
+      because a conversion takes 42 us - three orders of magnitude over the
+      4.5 us interrupt budget - and the first version, which converted inside
+      the control-IN handler, made every request fail with `EIO`; `main()` runs
+      it and `V003_ADC_GET` returns `(tag << 16) | (valid << 15) | value`.
+      Verified with `scripts/adc_test.py` (three clean runs):
+      the internal 1.2 V reference (channel 8) reads 365 counts = 1176 mV, the
+      internal calibration voltage (channel 9) reads 511 counts = 1647 mV at
+      2/4 AVDD and 767 counts = 2472 mV at 3/4 AVDD, both within 5 mV of
+      0.5/0.75 x 3.3 V; channel 1 follows PA1 driven by PWM channel 2 exactly
+      (1023 counts at 100 % duty, 0 counts at 0 % duty), which is a real
+      external input measured without any wiring; one read after START already
+      carries the new completion tag; and an out of range channel is counted as
+      a request but not as a conversion (`V003_ADC_GET_STATUS` reports
+      `err=0 us=42`, and a conversion that times out is published with the valid
+      bit clear instead of as a plausible looking 1023 counts).  **The part is 10 bit, not 12** - scaling as 12 bit
+      reported the 1.2 V reference as 294 mV, which is the whole story of how
+      this module looked broken for an afternoon; see notes/adc.md.
+- [x] UART (`V003_MODULE_UART`, `V003_CAP_UART`, module id 0x07, commands
+      0x90-0x9a): USART1 on PD0 (TX) / PD1 (RX).  The default mapping is the USB
+      pull-up line and the boot button on this board, remap 10 is those same two
+      pins, and remap 11 is the LED pin and the I2C SDA line - so remap 01 is the
+      only usable one.  A 64 byte receive ring filled by the interrupt and a
+      32 byte transmit ring it drains, configuration with its *actual* baud read
+      back, and counters for queued/available/dropped plus the receiver's
+      isr/overrun/framing/parity.  Verified with `scripts/uart_test.py` (three
+      clean runs; needs a PD0<->PD1 jumper because **PD1 is the chip's SWIO debug
+      pin** and the programmer holds it): 32 byte patterns round trip byte for
+      byte at 9600, 115200, 921600 and 3000000 baud with exactly one interrupt per
+      received byte and no error counter moving; the read back baud error is
+      0.00 / -0.08 / +0.16 / 0.00 % (921600 -> 923076 is the manual's own rounding
+      example); an out of range baud, word length, parity or stop bit count is
+      refused as a whole; queueing 128 bytes at the slowest rate reports the
+      backlog and counts what did not fit; flooding the receiver fills the ring to
+      63 and counts the overflow; flush drops what it held and reports how much.
+      Costs 1292 B of flash and 128 B of RAM, so 32 B were taken back by shrinking
+      the zero length vendor OUT request ring to 4 entries
+      (`V003_NUM_SIMPLE_REQUESTS`); the measured stack margin is 376 B.  **The
+      interrupt is the first one in this firmware besides USB**, so it was
+      measured against the thing that matters: 29,696 bytes of loopback traffic at
+      3 Mbps while 1,961 USB control transfers completed with no errors and none
+      slower than 20 ms.  HDSEL half duplex was measured too and does *not* echo,
+      so it is not used (notes/uart.md).
+- [ ] UART kernel child driver: a UART belongs behind a TTY, which is a bigger
+      piece of work than the other children (`tty_port` or `serdev`, a receive
+      path that survives an arbitrary reader, termios mapped onto
+      `V003_UART_CONFIG`).  The protocol is mirrored in `kernel/usb-mfd.h`; the
+      MFD cell is deliberately not added yet.
+- [ ] Flashing with the PD0<->PD1 jumper attached fails while the UART is
+      enabled: it holds the SWIO line and `minichlink` reports `nothing connected
+      to linker`.  The port releasing both pins when it is disabled and
+      `scripts/wdg_test.py --reset` are the two workarounds.
+- [ ] ADC kernel child driver: an IIO device (one `iio_chan_spec` per channel,
+      the two internal channels with a `IIO_CHAN_INFO_SCALE`, `read_raw` mapped
+      onto START + GET).  The MFD cell is deliberately not in
+      `kernel/usb-mfd.c` yet: a cell without a driver would only show up as an
+      unbound platform device.
+- [x] Watchdog (`V003_MODULE_WDG`, `V003_CAP_WDG`): `WDG_START`/`WDG_FEED`/
+      `WDG_GET_STATE`/`WDG_GET_RESET_CAUSE` in the firmware (WCH's IWDG sequence,
+      prescaler picked to fit the 12 bit reload, the *actual* timeout reported
+      because the LSI is only good to +-20 %), and `v003-wdt.ko` as a
+      `watchdog_device` with `WDIOF_CARDRESET` when the last reset was the
+      watchdog.  Verified by letting it bite: `scripts/wdg_test.py --reset 2000`
+      arms it, feeds it, stops feeding, sees the device vanish and come back
+      reporting `watchdog` as the cause with the watchdog off.  Costs 484 B of
+      flash and 8 B of RAM; it is part of the default build now, and the
+      capability bit keeps slimmer builds honest.
+- [ ] Power management (`V003_MODULE_PWR`, `V003_CAP_PWR` reserved): sleep and
+      standby entry, wakeup source configuration, and reporting the wake reason.
+      It needs its own design pass because a sleeping device stops answering USB,
+      so the core's suspend/resume and the userspace test flow both have to agree
+      on how it is entered and left.
+
+## Device identity from the chip
+
+- [x] The ESIG unique id (chapter 15 of the reference manual) is exposed:
+      `V003_GET_DEVICE_UID` (0x3c) returns the 12 bytes, `V003_GET_DEVICE_SN`
+      (0x31) now returns its first word instead of the placeholder `0x12345678`,
+      and the USB serial number *string* is built from it at boot, so every board
+      reports its own.  Verified against an independent read through the
+      programmer (`minichlink -r ... 0x1FFFF7E8 16`): `cd ab 0b 92 82 bc 5a fa ff
+      ff ff ff`, byte for byte what the host sees as `iSerial` and through 0x3c,
+      and what the kernel logs at probe (`serial 0x920babcd, unique id
+      cdab0b9282bc5afaffffffff`).  Only 64 of the documented 96 bits are
+      programmed, so the last word reads blank on this part.
+- [x] Cost: 64 bytes of RAM (the serial string, a 12 byte copy of the id and
+      alignment) and ~130 bytes of flash; the stack measurement still reports 480
+      bytes free afterwards.
+- [x] Reading the ESIG from inside the USB interrupt does not work (the host gets
+      EIO, the same signature as an overrun handler) - `main()` copies it once at
+      boot and everything else uses the copy.
+- [ ] The frame path cannot carry the unique id yet: a frame response payload
+      tops out at the 8 byte buffer in `v003_frame_poll()`, so `frame_test.py`
+      reads it over the control path.  Widening that buffer would also let other
+      payload commands use the framed transport.
+
 ## USB identity
 
 - [x] One source of truth for the vendor/product id: `lib/v003_usb_ids.h` is
@@ -53,8 +190,11 @@ Legend: `[x]` done, `[ ]` open, `[~]` in progress, `[!]` blocked.
       software USB costs: frame maths, no NAK, data toggle death, the SETUP ACK
       budget), `frame-protocol.md` (wire format and measured performance),
       `i2c.md` (wiring, clock calibration, memory devices, completion tags),
-      `kernel.md` (MFD structure, transports, the three child drivers),
-      `debugging.md` (tooling, six case studies, test harness traps).
+      `adc.md` (10 bit not 12, measured readings, conversion time, the pin
+      table gap), `uart.md` (the remap that works here, PD1 being SWIO, ring
+      sizing, the measured loopback), `kernel.md` (MFD structure, transports,
+      the child drivers), `debugging.md` (tooling, eleven case studies, test
+      harness traps).
 - [ ] Notes will rot if they are not used: when a measurement or a decision
       changes, the note that describes it has to change in the same turn.
 

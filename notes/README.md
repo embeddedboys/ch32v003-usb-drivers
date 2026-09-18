@@ -22,6 +22,8 @@ separate on purpose:
 | [usb-identity.md](usb-identity.md)       | the vendor/product id, where "Generic" comes from, and what to do about it  |
 | [frame-protocol.md](frame-protocol.md)   | the framed endpoint protocol, its wire format and measured performance   |
 | [i2c.md](i2c.md)                         | bit banged I2C: wiring, clock calibration, memory devices, result tags    |
+| [adc.md](adc.md)                         | ADC1: 10 bit and not 12, measured readings, conversion time, the pin table gap |
+| [uart.md](uart.md)                       | USART1: the remap that works here, PD1 being SWIO, ring sizing, the measured loopback |
 | [kernel.md](kernel.md)                   | the Linux side: MFD core, transports, GPIO/I2C/SPI child drivers          |
 | [debugging.md](debugging.md)             | tooling, case studies of every bug found, and test harness traps          |
 

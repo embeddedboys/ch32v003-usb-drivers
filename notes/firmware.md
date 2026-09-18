@@ -14,6 +14,10 @@ those three numbers.
 | `vendor/gpio.c`  | module 0x01: pin mode, set, get                                        |
 | `vendor/i2c.c`   | module 0x03: bit banged master                                         |
 | `vendor/spi.c`   | module 0x02: hardware SPI1 master                                      |
+| `vendor/wdg.c`   | module 0x04: IWDG and the reset cause                                  |
+| `vendor/pwm.c`   | module 0x05: TIM1 channels on PD2 and PA1                              |
+| `vendor/adc.c`   | module 0x06: ADC1, one conversion per request                          |
+| `vendor/uart.c`  | module 0x07: USART1 on PD0/PD1, a ring in each direction               |
 | `rv003usb/`      | the software USB stack (vendored, patchable)                           |
 
 Two contexts, and the split between them is the single most important thing to
@@ -35,7 +39,8 @@ Requests are vendor control transfers: `bmRequestType` `0x40` (OUT) / `0xC0`
 | Module | cmd  | Name                    | Argument (wValue)                          | Result / data stage                             |
 | ------ | ---- | ----------------------- | ------------------------------------------ | ----------------------------------------------- |
 | 0x00   | 0x30 | GET_DEVICE_VER          | -                                          | `0x1010`                                        |
-| 0x00   | 0x31 | GET_DEVICE_SN           | -                                          | `0x12345678`                                    |
+| 0x00   | 0x31 | GET_DEVICE_SN           | -                                          | first word of the unique id                     |
+| 0x00   | 0x3c | GET_DEVICE_UID          | -                                          | 12 byte ESIG unique id (IN data stage)          |
 | 0x00   | 0x32 | GET_EP_STATS            | 0-2 RX bytes, 3 EP3 IN packets, 4 bytes    | counter; `wValue 0xff` on OUT resets them        |
 | 0x00   | 0x33 | GET_FIFO_LEVEL          | -                                          | bytes queued for EP3 IN                         |
 | 0x00   | 0x34 | GET_FIFO_DROPS          | -                                          | bytes dropped when that FIFO was full           |
@@ -77,9 +82,215 @@ Requests are vendor control transfers: `bmRequestType` `0x40` (OUT) / `0xC0`
 | 0x03   | 0x5d | I2C_WAIT_READY          | timeout in ms                              | OUT data stage `[addr<<1\|0]`, ACK polls        |
 | 0x03   | 0x5e | I2C_GET_WAIT_US         | -                                          | duration of the last WAIT_READY                 |
 | 0x03   | 0x5f | I2C_MEM_WRITE_READ      | read count, 1 byte word addr, ACK poll bits | write + optional ACK poll + random read in one request |
+| 0x04   | 0x60 | WDG_START               | timeout in milliseconds                    | starts the IWDG (one way door)                  |
+| 0x04   | 0x61 | WDG_FEED                | `0xaaaa`                                   | reloads the counter                             |
+| 0x04   | 0x62 | WDG_GET_STATE           | -                                          | `(actual timeout ms << 8) \| running`           |
+| 0x04   | 0x63 | WDG_GET_RESET_CAUSE     | -                                          | cause flags of the last reset, then cleared     |
 
 `scripts/*.py` are the reference hosts for all of this, and
 `kernel/usb-mfd.h` mirrors the command set for the Linux side.
+
+## The factory unique id (ESIG)
+
+Chapter 15 of the reference manual: the ESIG sits in the system memory area, is
+programmed by WCH and is read only.  `R16_ESIG_FLACAP` (flash capacity) is at
+`0x1FFFF7E0`, the 96 bit unique id (`UNIID1..3`) at `0x1FFFF7E8..F0` - ch32fun
+already declares all of it as `ESIG_TypeDef`, so the firmware uses
+`&ESIG->UNIID1` rather than a hardcoded address.
+
+Two things were learned the hard way:
+
+- **Reading it from the USB interrupt breaks the bit banging.**  Pointing the
+  control-IN data stage straight at the ESIG looked free (no RAM copy, the host
+  reads the memory mapped id) and failed: the host got EIO, exactly like a
+  handler that overruns the ACK window.  `main()` now copies the 12 bytes into a
+  RAM array once at boot (`serial_from_esig()`) and both the command and the
+  serial number string use that copy.  The ESIG is a slow read, and the ISR has
+  a few microseconds.
+- **Only 64 of the 96 bits are programmed on this part.**  An independent read
+  through the programmer (`minichlink -r ... 0x1FFFF7E8 16`) returns
+  `cd ab 0b 92 82 bc 5a fa ff ff ff ff`, so the third word is blank and the
+  serial number string ends in `ffffffff`.  That is the chip's answer, not a
+  read failure - `minichlink -i` reports the same eight bytes as its part UUID.
+
+The serial number string is built from that id at boot (hex, UTF-16LE) into
+`v003_serial_descriptor`, which costs 50 bytes of RAM; the descriptor table stays
+in flash because it holds a pointer to the buffer rather than to a literal.
+Total cost of the feature: 64 bytes of RAM (the string, the 12 byte id copy and
+alignment) and ~130 bytes of flash.
+
+## Room for more modules
+
+Measured, so the question "can we add ADC/PWM/UART" has an answer instead of a
+feeling.  The flash column is what a module costs in the default build (the
+default LTO build is 11552 bytes; these modules are about three quarters of it,
+rest is `vendor.c`'s control path, the descriptors and the ring code):
+
+| module                  | lines | flash  | RAM    |
+| ----------------------- | ----- | ------ | ------ |
+| `i2c.c` (bit banging)   | 648   | ~2.4 kB | 192 B |
+| `spi.c` (peripheral)    | 177   | ~1.0 kB | 64 B  |
+| `frame.c`               | 238   | ~0.8 kB | 152 B |
+| `gpio.c`                | 52    | ~0.36 kB | 0 B  |
+| `wdg.c`                 | 127   | ~0.48 kB | 8 B  |
+| `pwm.c`                 | 157   | 592 B   | 24 B |
+| `adc.c` (peripheral)    | 199   | 628 B   | 12 B |
+| `uart.c` (peripheral)   | 360   | 1292 B  | 128 B |
+| `rv003usb.c`            | 463   | ~0.87 kB | 208 B |
+
+Current budget, default build (`gpio,spi,i2c,wdg,pwm,adc,uart`, I2C tracer on):
+flash 11552/16384 (**4,832 bytes free**), RAM 1408/2048, with the stack
+measurement reporting **376 bytes free**.  The same build with `TRACE=0` is
+11328/1304, so the tracer is still the single biggest thing a slimmer build can
+give up.
+
+- **Flash is not the constraint.** The peripheral wrappers are all of the
+  `spi.c`/`gpio.c` class and measured: PWM 592 bytes, ADC 628, UART 1292 (it is
+  the only one with two rings and an interrupt handler).  The default build has
+  4.8 kB of flash free.
+- **RAM is the constraint.** Statics are 1408 bytes and the rest is stack, so a
+  new buffer is paid for out of that 376 byte margin (a floor of ~150-200 bytes
+  of margin is what the current call chains need).  PWM took 24 bytes and ADC 12,
+  both state rather than buffers; UART took 128 for its two rings, the largest
+  single allocation any module has asked for, and it was paid for by shrinking
+  the zero length vendor OUT request ring from 8 entries to 4
+  (`V003_NUM_SIMPLE_REQUESTS`, 32 bytes, drops visible through
+  `V003_GET_REQ_DROPS`) because the rule is to keep ~350 bytes of margin.
+- Easy RAM to reclaim first, and it argues for the same mechanism: the I2C clock
+  tracer (136 B of RAM, 224 B of flash) is a debug facility, and the UEvent ring
+  (128 B for 8 entries) could shrink.  Gating those buys a UART ring outright.
+
+So the sane shape is: **compile time module selection plus a capability report**,
+and the second half of that is in place:
+
+- `V003_GET_CAPABILITIES` (0x3d) returns a 16 byte struct through a data stage,
+  so it can grow by appending fields: which modules exist (`V003_CAP_*`), the
+  channel counts, and **which pins the device owns**.  It is a `const` in flash
+  and the data stage points straight at it, so it costs no RAM at all.  The
+  device currently reports `0xff` (gpio, spi, i2c, adc, pwm, uart, wdg and the
+  framed protocol), 56 gpio lines and the reserved mask below.
+- The reserved pin mask covers the USB pins, the pins of the modules that are
+  enabled, and the flat range 16..31 that has no port behind it - so userspace
+  cannot write into an address that is not a GPIO, cannot drive the bus it is
+  talked to over, and cannot fight the I2C or SPI pins.
+- The kernel core builds its child cells from that mask instead of a hardcoded
+  list, and the GPIO child takes the mask from the core, so a firmware with a
+  module compiled out does not get a child driver probing it.  A device without
+  the command is treated as the original GPIO+I2C+SPI build.
+- **Compile time selection works**: `make MODULES=gpio,spi,i2c` (default) or
+  `make MODULES=gpio,spi`, `make MODULES=gpio`, plus `make TRACE=0` for the I2C
+  clock tracer.  Measured on the same tree:
+
+  | build                       | flash | RAM   |
+  | --------------------------- | ----- | ----- |
+  | `gpio,spi,i2c` + trace      | 8548  | 1332  |
+  | `gpio,spi,i2c`, `TRACE=0`   | 8324  | 1196  |
+  | `gpio,spi`, `TRACE=0`       | 6500  | 1112  |
+  | `gpio`                      | 5624  | 1028  |
+
+  A GPIO-only build reports `0x41` (gpio + frame) and a reserved mask with only
+  the USB pins, which is the whole mechanism working end to end: the kernel core
+  added one cell, and `v003-i2c.ko` loaded without a device and stayed idle
+  instead of probing something that is not there.
+- `V003_MODULE_*` macros default to today's set, so a plain `make` is unchanged
+  (byte for byte in flash and RAM).  `adc`, `pwm`, `wdg` and `uart` are
+  implemented and in the default build; `pwr` is still a reserved name (the macro
+  and the capability bit exist, the module does not, and enabling it is a compile
+  error rather than a silently absent module).
+- Compatibility: capabilities are additive.  A host that does not know the
+  command treats the device as the old fixed set (that is what the core does
+  when the read fails).
+- Pins the *driver* owns (a chip select line, an IRQ) cannot come from the
+  device, so the core takes `reserved=<pin>[,<pin>]` and merges it in;
+  `v003-spi.ko` warns when its `cs_pin` is not in the mask.
+
+Two constraints a new module has to respect, both already learned here:
+
+- **Pin ownership is real now.**  With PWM/ADC/UART enabled, "all 56 lines are
+  GPIO" stops being true, and letting userspace drive a line a peripheral owns is
+  the same silent breakage as the SPI NSS/PC1 collision.
+- **The interrupt budget stays 4.5 us.**  Anything that wants an ISR competes
+  with the USB SETUP ACK.  The UART is the first module to take one (a single
+  handler for RXNE and TXE, moving one byte and nothing else) and it had to be
+  measured rather than argued: 29,696 bytes of loopback traffic at 3 Mbps while
+  1,961 USB control transfers completed with no errors and none slower than
+  20 ms ([uart.md](uart.md)).  Interrupts are not nested here, so a peripheral
+  ISR can only *delay* the USB handler by its own length - anything longer than a
+  few microseconds is still not allowed.
+
+## What this board actually has
+
+Probed pin by pin with the GPIO module (drive 0, drive 1, read back), because "it
+is in the reference manual" is not the same as "it is bonded out and nothing else
+holds it":
+
+| pins | result |
+| ---- | ------ |
+| PA1, PA2 | drivable |
+| PA0, PA3..PA15 | read 0 whatever is written - not connected on this package |
+| PC0..PC7 | drivable (PC0 is the LED, PC1/PC2 the I2C pair, PC4 the SPI chip select and ADC_IN2, PC5..PC7 the SPI pins) |
+| PD0, PD2 | drivable (PD2 is PWM channel 1) |
+| PD1 | **held high by the programmer: it is SWIO**; needs a jumper to PD0 to be an input ([uart.md](uart.md)) |
+| PD3..PD6 | the USB pair, the USB pull-up and the boot button; not probed on purpose, driving them breaks the link |
+
+## PWM (TIM1)
+
+`V003_MODULE_PWM`, module id 0x05, two channels on **PD2** and **PA1**.
+`PWM_SET` takes a data stage of `{channel, enable, duty in permille, period in
+ns}` - the shape the Linux PWM API hands a driver - and `PWM_GET` reads the same
+structure back with the period the prescaler and reload actually work out to.
+
+The pin choice is forced by the chip being a 20 pin part with no PA8..PA11: the
+four TIM1 channels only exist where the remap table puts them, and in the default
+mapping (表 7-8, `TIM1_RM=00`) that is CH1 = PD2, CH2 = PA1, CH3 = PC3,
+CH4 = PC4.  PC3 and PC4 are this board's spare GPIO and its SPI chip select, so
+only the first two are offered; both are reported in the reserved pin mask, which
+is how userspace finds out that PA1 is not a GPIO any more.
+
+Two things worth remembering:
+
+- **The arithmetic is deliberately 32 bit.**  Writing `period_ns * 48 / 1000`
+  directly pulls `__udivdi3` in and costs about 1.5 kB of flash for a two channel
+  PWM - more than the whole module.  Dividing first (cycles per microsecond is a
+  constant) brings the module down to 592 bytes of flash and 24 bytes of RAM.
+- **A read back caught what a level check could not.**  The pin level at 0 % and
+  100 % duty is static at any frequency, so it only proves the timer drives the
+  pin; the period read back is what exposed a factor of 1000 in the cycle
+  constant (a 1 ms request was running at 1 s).  `scripts/pwm_test.py` checks
+  both, and says in its header what still needs a scope: any duty in between.
+
+## Watchdog (IWDG)
+
+`V003_MODULE_WDG`, module id 0x04.  WCH's sequence, exactly as their own example
+does it: `0x5555` to `IWDG->CTLR` opens the prescaler and reload registers,
+`0xaaaa` reloads the counter (this is also the feed), `0xcccc` starts it.  The
+firmware picks the smallest prescaler whose reload fits the 12 bit register, so
+any timeout from about a millisecond to 26 s can be requested, and it reports the
+timeout it *configured* rather than the one that was asked for, because the LSI is
+only good to about +-20 % (32..40 kHz, RM chapter 9).
+
+Three things worth knowing:
+
+- **It is a one way door.**  The IWDG cannot be stopped once started, so
+  `WDG_FEED` is the only way to keep the chip alive from then on.  Feeding takes
+  the key `0xaaaa` and does nothing with a wrong value, so a host cannot kick it
+  by accident.
+- **The reset cause is captured at boot and cleared**, so `WDG_GET_RESET_CAUSE`
+  answers with the flags of the *last* reset (pin, power-on, software, IWDG, WWDG,
+  low power) and answers once.  The kernel driver turns the IWDG bit into
+  `WDIOF_CARDRESET`, so `wdctl` and friends report it.
+- **After a reset the IWDG is off again** (that is the hardware, not the
+  firmware), so `running` is truthful and a host has to re-arm it.  A device that
+  resets in a loop because nothing feeds it is exactly what the flags are for.
+
+Verified on hardware by letting it bite: `scripts/wdg_test.py --reset 2000` arms
+2 s, feeds it for another 1.5 s (no reset), stops feeding, sees the device
+disappear, and finds it back with `watchdog` as the reset cause and the watchdog
+off.  The non-destructive half of that script runs by default and is also part of
+`scripts/v003_test.py`.
+
+Cost: 484 bytes of flash and 8 bytes of RAM (the 32 bit divides by the prescaler
+table pull in `__udivsi3`, which is most of it).
 
 ## The two budgets
 

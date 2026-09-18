@@ -27,7 +27,7 @@ Board together with a WCH-LinkE programmer.
 | `bootloader/` | Upstream USB HID bootloader (VID 1209, PID B003)                           |
 | `rv003usb/`   | Vendored software USB stack (bit-banged low speed device)                  |
 | `lib/`        | USB descriptor / type definitions, and the shared VID/PID (`v003_usb_ids.h`) |
-| `kernel/`     | Linux driver: `usb-mfd.ko` (core) + `v003-gpio/i2c/spi.ko` (children)       |
+| `kernel/`     | Linux driver: `usb-mfd.ko` (core) + `v003-gpio/i2c/spi/pwm/wdt.ko` (children) |
 | `scripts/`    | pyusb host side protocol tests and helpers                                 |
 | `tests/`      | Userspace uAPI tests (GPIO character device, i2c-dev) and the rusb experiment |
 
@@ -65,6 +65,24 @@ git submodule update --init ch32fun
 
 ### 2. Build the firmware
 
+The firmware is assembled from modules; the default is everything that exists
+today, and what is compiled in is reported by the device (see
+`GET_CAPABILITIES` under *Device*), so a host never probes a module that is not
+there:
+
+```shell
+cd vendor
+make                              # everything:             11552 B flash, 1408 B RAM
+make MODULES=gpio,spi,i2c,wdg,pwm,adc  # without UART:      10036 B, 1176 B
+make MODULES=gpio                 # GPIO only:               5624 B, 1028 B
+make TRACE=0                      # without the I2C tracer: 11328 B, 1304 B
+```
+
+`pwr` is a reserved name with no source file yet; the build refuses it outright
+(`#error`) rather than advertising a capability that has no code behind it.
+`gpio spi i2c wdg pwm adc uart` are the modules that exist, and the device
+reports which of them it was built with.
+
 ```shell
 cd vendor
 make build           # produce vendor.bin / vendor.elf
@@ -97,13 +115,17 @@ use symbols exported by the core, so they have to be loaded in that order.
 cd kernel
 make                       # LLVM=1 is passed automatically on clang built kernels
 
-sudo insmod usb-mfd.ko     # checks the firmware version, adds the child cells
+sudo insmod usb-mfd.ko     # reads the firmware version and capability report,
+                           # adds a child cell per module the device reports
+sudo insmod usb-mfd.ko reserved=36   # keep the SPI chip select line out of the gpiochip
 sudo insmod v003-gpio.ko   # gpiochip with 56 lines, USB pins reserved
 sudo insmod v003-i2c.ko    # i2c_adapter, PC1 = SDA, PC2 = SCL
 sudo insmod v003-spi.ko    # spi_controller, PC5 = SCK, PC6 = MOSI, PC7 = MISO
+sudo insmod v003-wdt.ko    # the chip's IWDG as a watchdog_device
+sudo insmod v003-pwm.ko    # TIM1 channels 1 and 2 as a pwmchip
 ./../tests/gpio_chardev.py # GPIO v2 character device test (no libgpiod needed)
 
-sudo rmmod v003-spi v003-i2c v003-gpio usb-mfd
+sudo rmmod v003-pwm v003-wdt v003-spi v003-i2c v003-gpio usb-mfd
 ```
 
 `tests/gpio_chardev.py` drives the chip through the GPIO v2 uAPI with plain
@@ -202,6 +224,9 @@ python3 -m venv .venv && .venv/bin/pip install pyusb
 .venv/bin/python scripts/v003_test.py   # generic module, EP data path, GPIO
 .venv/bin/python scripts/spi_test.py    # SPI bridge
 .venv/bin/python scripts/spi_test.py --loopback --soak 150   # with PC6<->PC7 jumper
+.venv/bin/python scripts/adc_test.py     # ADC: internal reference and calibration voltage
+.venv/bin/python scripts/uart_test.py    # UART: needs a jumper between PD0 and PD1
+.venv/bin/python scripts/pwm_test.py     # PWM: reported period and both duty extremes
 .venv/bin/python scripts/stress_test.py --mode mixed --iterations 300
 ```
 
@@ -211,6 +236,21 @@ mismatches (~105 round trips/s on the endpoint path, ~83 transfers/s on the
 control path). A plain wire cannot verify the bit order - every bit returns on
 the clock edge it left on - so MSB-first/CPOL/CPHA still follow `SPI_CTLR1`
 without independent proof.
+
+`uart_test.py` requires a jumper between **PD0 (TX) and PD1 (RX)**, because PD1
+is the chip's SWIO debug pin: the programmer holds it, so with the WCH-Link
+attached the receive pin cannot be used on its own. With the jumper in place the
+transmit path is the receiver's peer, and 32 byte patterns round trip byte for
+byte at 9600, 115200, 921600 and 3000000 baud (measured baud error 0 % to
+0.16 %, interrupts exactly one per byte, no framing or overrun errors).
+
+**The jumper and flashing do not get along**: while the UART is enabled, PD0 is
+an output driving an idle high line and through the jumper it holds SWIO, so
+`minichlink` fails with `nothing connected to linker`. Disable the port
+(`UART_CONFIG` with `enable = 0`; the module then releases both pins), reset the
+chip with the watchdog (`scripts/wdg_test.py --reset 400`, the watchdog is in the
+default build and needs only USB), or pull the jumper. `uart_test.py` disables
+the port in a `finally:` for exactly this reason.
 
 ### 6. Debugging with GDB
 
@@ -256,6 +296,11 @@ class `0xFF`) with one interface and three interrupt endpoints:
 | EP2 OUT   | payload is echoed to the EP3 IN FIFO           | clocked out on MOSI     |
 | EP3 IN    | echoes the EP1/EP2 OUT FIFO (8 bytes / packet) | MISO bytes              |
 
+The serial number string is not a placeholder: the firmware reads the factory
+ESIG unique id (96 bits, chapter 15 of the reference manual; this part leaves the
+third word blank) at boot and reports it as 24 hex characters, so every board
+identifies itself.  `GET_DEVICE_UID` (0x3c) hands the same 12 bytes to a host.
+
 Firmware requests are vendor control transfers: `bmRequestType` `0x40` (OUT) or
 `0xC0` (IN), `bRequest` `0`, `wValue` carries the payload and `wIndex` carries
 `cmd | (module << 8)`.
@@ -263,7 +308,32 @@ Firmware requests are vendor control transfers: `bmRequestType` `0x40` (OUT) or
 | `wIndex` | Module  | Request             | Payload / result                                            |
 | -------- | ------- | ------------------- | ----------------------------------------------------------- |
 | `0x30`   | generic | `GET_DEVICE_VER`    | IN, `0x1010`                                                |
-| `0x31`   | generic | `GET_DEVICE_SN`     | IN, `0x12345678`                                            |
+| `0x31`   | generic | `GET_DEVICE_SN`     | IN, first word of the factory unique id                     |
+| `0x3c`   | generic | `GET_DEVICE_UID`    | IN, the 12 byte ESIG unique id (also the USB serial number)  |
+| `0x3d`   | generic | `GET_CAPABILITIES`  | IN, 16 bytes: which modules this build has, channel counts, owned pins |
+| `0x70`   | pwm     | `PWM_SET`           | OUT data stage: `{channel, enable, duty permille, period ns}` |
+| `0x71`   | pwm     | `PWM_GET`           | IN data stage, `wValue` = channel: what the timer really does      |
+| `0x72`   | pwm     | `PWM_GET_INFO`      | IN, number of channels                                       |
+| `0x90`   | uart    | `UART_CONFIG`       | OUT data stage `{baud, data_bits, parity, stop_bits, enable}`: refused as a whole if a field is out of range |
+| `0x91`   | uart    | `UART_GET_CFG`      | IN data stage, the same struct with `actual_baud` filled in (what BRR really divides to) |
+| `0x92`   | uart    | `UART_WRITE`        | OUT data stage: queue bytes for the transmitter |
+| `0x93`   | uart    | `UART_READ`         | IN data stage, `wValue` = max bytes: what the receiver holds |
+| `0x94`   | uart    | `UART_GET_STATE`    | IN, `(tx_queued << 24) \| (rx_available << 16) \| (tx_dropped << 8) \| rx_dropped` |
+| `0x95`   | uart    | `UART_GET_COUNTS`   | IN, `(tx_bytes << 16) \| rx_bytes` (16 bit, wrapping) |
+| `0x96`   | uart    | `UART_GET_ERRORS`   | IN, `(isr_entries << 24) \| (overrun << 16) \| (framing << 8) \| parity` |
+| `0x97`   | uart    | `UART_FLUSH`        | OUT: drop what the receiver holds (counted as dropped) |
+| `0x99`   | uart    | `UART_GET_INFO`     | IN, `(receive ring size << 16) \| ports` |
+| `0x9A`   | uart    | `UART_CLEAR_STATS`  | OUT: zero the drop and error counters (they are 8 bit and would otherwise carry a previous session) |
+| `0x80`   | adc     | `ADC_START`         | OUT, `wValue` = channel: convert it in `main()` (42 us, so never in the interrupt) |
+| `0x81`   | adc     | `ADC_GET`           | IN, `(tag << 16) \| (valid << 15) \| value` - 10 bit, so 0..1023       |
+| `0x82`   | adc     | `ADC_GET_INFO`      | IN, `(resolution << 16) \| channels` = `0x0a000a`                      |
+| `0x83`   | adc     | `ADC_GET_SEQ`       | IN, conversions the main loop has run                        |
+| `0x84`   | adc     | `ADC_GET_STATUS`    | IN, `(error << 24) \| (last conversion us << 16) \| (requests << 8) \| conversions` |
+| `0x85`   | adc     | `ADC_SET_CALVOL`    | OUT, `wValue` 0/1 = calibration voltage 2/4 or 3/4 AVDD (channel 9 follows it) |
+| `0x60`   | wdg     | `WDG_START`         | OUT, `wValue` = timeout in ms (starts the chip's IWDG, cannot be undone) |
+| `0x61`   | wdg     | `WDG_FEED`          | OUT, `wValue` = `0xaaaa` (the reload key)                     |
+| `0x62`   | wdg     | `WDG_GET_STATE`     | IN, `(actual timeout ms << 8) \| running`                     |
+| `0x63`   | wdg     | `WDG_GET_RESET_CAUSE` | IN, why the chip last reset, and clears it                  |
 | `0x32`   | generic | `GET_EP_STATS`      | IN, `wValue`: 0-2 RX bytes of EP0/1/2, 3 EP3 IN packets, 4 EP3 IN bytes. OUT with `wValue == 0xff` resets the counters |
 | `0x33`   | generic | `GET_FIFO_LEVEL`    | IN, bytes queued in the EP3 IN FIFO                         |
 | `0x34`   | generic | `GET_FIFO_DROPS`    | IN, bytes dropped because the FIFO was full                 |

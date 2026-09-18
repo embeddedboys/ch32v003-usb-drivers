@@ -101,6 +101,11 @@ identity header, because they are UTF-16 descriptor literals:
 #define STR_PRODUCT      u"CH32V003 USB Bridge"
 ```
 
+The serial number string is not a literal: it is built at boot from the factory
+ESIG unique id (`V003_GET_DEVICE_UID`, 0x3c, and the same value in hex as the
+string), so hosts and udev rules can tell two boards apart.  Why that costs a RAM
+copy and not a pointer into the ESIG is in [firmware.md](firmware.md).
+
 Their length is computed with `sizeof()` when the descriptor table is built, so
 renaming the product needs no other change; each character costs two bytes of
 flash.  A product string longer than the 8 byte endpoint packet (about 3
