@@ -3,6 +3,31 @@
 Living task list for the CH32V003 USB drivers (firmware + Linux driver).
 Legend: `[x]` done, `[ ]` open, `[~]` in progress, `[!]` blocked.
 
+## USB identity
+
+- [x] One source of truth for the vendor/product id: `lib/v003_usb_ids.h` is
+      included by the firmware descriptor and by the kernel driver (kbuild gets
+      `-I$(src)/../lib`), and `scripts/v003_usb.py` parses it, so the host tools
+      cannot drift.  All twelve scripts now import `VID`/`PID` (or call
+      `find_device()`) instead of spelling `0x1209`/`0xC303` out; each of them
+      still runs, and the four suites pass.
+- [x] Established why `lsusb` prints `Generic`: the vendor id is in the host's
+      hwdb (`usb:v1209*` -> `ID_VENDOR_FROM_DATABASE=Generic`, from
+      `20-usb-vendor-model.hwdb`), and a known vendor id beats the device's own
+      manufacturer string - proven by flashing `VENDOR_ID 0xbeef` and watching
+      `lsusb` fall back to `embeddedboys`.  A product specific hwdb drop-in
+      cannot override it (a shorter pattern sorts first).  Written up in
+      notes/usb-identity.md.
+- [ ] Register `1209:C303` at pid.codes: it currently returns 404, while
+      `1209:B003` (the bootloader the board is flashed with) is registered.
+      Free, requires the open source licence this project already has.
+- [ ] After that, add the product entry upstream (`1209  c303  CH32V003 USB
+      Bridge` in hwdata's usb.ids) so every machine shows the device by name.
+      The vendor field stays `Generic`, that is the shared vendor id.
+- [ ] A vendor name of our own (the `lsusb` vendor field reading
+      `embeddedboys`) would need a vendor id allocated to embeddedboys - a
+      product decision, and then a one line change in `lib/v003_usb_ids.h`.
+
 ## Documentation
 
 - [x] `AGENTS.md`: the rules for changing this repository (git discipline, the

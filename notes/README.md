@@ -19,6 +19,7 @@ separate on purpose:
 | ---------------------------------------- | ----------------------------------------------------------------------- |
 | [firmware.md](firmware.md)               | firmware structure, the command reference, the two hard budgets, the RAM map |
 | [usb.md](usb.md)                         | what software USB on a CH32V003 costs: frame maths, toggles, the ACK budget |
+| [usb-identity.md](usb-identity.md)       | the vendor/product id, where "Generic" comes from, and what to do about it  |
 | [frame-protocol.md](frame-protocol.md)   | the framed endpoint protocol, its wire format and measured performance   |
 | [i2c.md](i2c.md)                         | bit banged I2C: wiring, clock calibration, memory devices, result tags    |
 | [kernel.md](kernel.md)                   | the Linux side: MFD core, transports, GPIO/I2C/SPI child drivers          |

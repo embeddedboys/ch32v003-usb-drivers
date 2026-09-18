@@ -26,7 +26,7 @@ Board together with a WCH-LinkE programmer.
 | `vendor/`     | Main firmware: vendor specific USB device, GPIO, I2C and SPI modules       |
 | `bootloader/` | Upstream USB HID bootloader (VID 1209, PID B003)                           |
 | `rv003usb/`   | Vendored software USB stack (bit-banged low speed device)                  |
-| `lib/`        | USB descriptor / type definitions                                          |
+| `lib/`        | USB descriptor / type definitions, and the shared VID/PID (`v003_usb_ids.h`) |
 | `kernel/`     | Linux driver: `usb-mfd.ko` (core) + `v003-gpio/i2c/spi.ko` (children)       |
 | `scripts/`    | pyusb host side protocol tests and helpers                                 |
 | `tests/`      | Userspace uAPI tests (GPIO character device, i2c-dev) and the rusb experiment |
@@ -34,6 +34,12 @@ Board together with a WCH-LinkE programmer.
 Three documents answer three different questions: this README how to build and
 run, [TODO.md](TODO.md) what is done and what was verified on hardware, and
 [notes/](notes/README.md) why the code looks the way it does.
+
+The USB identity (vendor id, product id) lives in one place, `lib/v003_usb_ids.h`,
+and the firmware, the kernel driver and the host scripts all take it from there.
+Neither the device nor a local rule can change what `lsusb` prints in front of
+the product name - see [notes/usb-identity.md](notes/usb-identity.md) for why,
+and for how to register the id and get it into the upstream database.
 
 ## Getting Started
 
