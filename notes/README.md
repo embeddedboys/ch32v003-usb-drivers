@@ -30,6 +30,7 @@ separate on purpose:
 | Document                          | Where                                                      |
 | --------------------------------- | ---------------------------------------------------------- |
 | CH32V003 application manual V1.9  | `hardware-docs/CH32V003RM.PDF` (tracked) - RCC, GPIO, SPI1, USB and SysTick registers, and the 2 kB SRAM map |
+| WCH EVT package                   | `hardware-docs/CH32V003EVT.ZIP` (tracked) - the official standard peripheral library (`EVT/EXAM/SRC/Peripheral`), one example per peripheral, the evaluation board manual and schematics |
 | BH1750, AT24C256 datasheets        | `hardware-docs/` (untracked, they belong to the bench)      |
 | Diolan DLN-2 drivers              | the kernel tree: `drivers/mfd/dln2.c`, `drivers/{gpio,i2c/busses,spi}/*-dln2.c` |
 | rv003usb                          | `rv003usb/` (vendored; `rv003usb.h` documents the stack's contracts) |

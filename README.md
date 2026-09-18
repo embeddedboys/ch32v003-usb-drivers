@@ -22,7 +22,7 @@ Board together with a WCH-LinkE programmer.
 | ------------- | ------------------------------------------------------------------------- |
 | `AGENTS.md`   | Rules for changing this repository (read before editing)                   |
 | `notes/`      | Knowledge base: measured limits, protocol details, debugging case studies  |
-| `hardware-docs/` | CH32V003 reference manual (`CH32V003RM.PDF`, tracked); the device datasheets in the same directory are not tracked |
+| `hardware-docs/` | CH32V003 reference manual (`CH32V003RM.PDF`) and the WCH EVT package (`CH32V003EVT.ZIP`), both tracked; the bench device datasheets are not |
 | `vendor/`     | Main firmware: vendor specific USB device, GPIO, I2C and SPI modules       |
 | `bootloader/` | Upstream USB HID bootloader (VID 1209, PID B003)                           |
 | `rv003usb/`   | Vendored software USB stack (bit-banged low speed device)                  |
