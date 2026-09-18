@@ -101,6 +101,13 @@ commands belong long term.
   does, with `DATA_NACK` at byte 1), so one command byte per transaction is the
   safe pattern.
 - No 10 bit addressing.
-- No SMBus: emulated block reads need `I2C_M_NOSTART` continuations, which a
-  "one transaction per request" firmware cannot express. `kernel/i2c.c`
-  advertises `I2C_FUNC_I2C` only, on purpose.
+- SMBus: quick, byte, byte data and word data work (the i2c core emulates them
+  as exactly the sequences the firmware already produces - verified by comparing
+  each `i2cget` against the equivalent `i2ctransfer`: identical results), but
+  the block sizes do not, because their emulation continues a transfer with
+  `I2C_M_NOSTART`.  `kernel/i2c.c` advertises `0x7f0001` for that reason.
+- `i2cget` is a poor fit for a 2 byte word address device like the AT24C256: an
+  SMBus read sends **one** command byte, so the address the device ends up using
+  is its own business (the retained high byte shows through).  Use
+  `i2ctransfer -y 8 w2@0x50 0x00 0x00 r16` (or the at24 driver) for EEPROM
+  addressing; `i2cdetect -y N` works and is a fine presence check.

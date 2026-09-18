@@ -3,6 +3,22 @@
 Living task list for the CH32V003 USB drivers (firmware + Linux driver).
 Legend: `[x]` done, `[ ]` open, `[~]` in progress, `[!]` blocked.
 
+## I2C / i2c-tools
+
+- [x] `i2cdetect -y N` uses SMBus quick write (or read byte with `-r`) to probe,
+  and the adapter only advertised `I2C_FUNC_I2C`, so it answered "Bus doesn't
+  support detection commands".  `kernel/i2c.c` now advertises the SMBus
+  transfers the firmware can express and lets the i2c core emulate them
+  (`0x7f0001`: quick, byte, byte data, word data; the block sizes stay out
+  because their emulation needs `I2C_M_NOSTART`).  Verified on hardware:
+  `i2cdetect -y 8` and `i2cdetect -y -r 8` both find the AT24C256 at 0x50 and
+  nothing else, and each `i2cget` form returns exactly what the equivalent
+  `i2ctransfer` sequence returns (read byte - no command - matches the current
+  address read; read byte data matches `w1 0xNN r1`; read word data matches
+  `w1 0xNN r2`), which is the protocol equivalence that matters - the value
+  itself is the device's answer to a one byte command on a two byte word
+  address part.  `tests/i2c_dev_test.py` now asserts the advertised set.
+
 ## USB identity
 
 - [x] One source of truth for the vendor/product id: `lib/v003_usb_ids.h` is

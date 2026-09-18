@@ -89,8 +89,12 @@ model:
 | lone read                                 | `READ` (current address read) |
 | read data                                 | `GET_RX` (control IN data stage) |
 
-- `I2C_M_TEN` and `I2C_M_NOSTART` are refused (`-EOPNOTSUPP`); SMBus emulation is
-  deliberately not advertised.
+- `I2C_M_TEN` and `I2C_M_NOSTART` are refused (`-EOPNOTSUPP`).
+- SMBus is advertised for the sizes the firmware can actually express
+  (`0x7f0001`: quick, byte, byte data, word data) and the i2c core emulates them
+  on top of `master_xfer`; `i2cdetect` needs quick to probe at all.  The block
+  sizes are **not** advertised: their emulation continues a transfer with
+  `I2C_M_NOSTART`, which one-transaction-per-request firmware cannot do.
 - The firmware's status maps to errno: address NACK `-ENXIO`, data NACK `-EIO`,
   read-phase NACK `-EREMOTEIO`, clock stretch or timeout `-ETIMEDOUT`, not
   configured `-ENODEV`.
