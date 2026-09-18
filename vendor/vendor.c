@@ -602,11 +602,39 @@ void usb_handle_user_in_request(struct usb_endpoint *e, uint8_t *scratchpad,
 	usb_send_empty(sendtok);
 }
 
+/* SET_CONFIGURATION (bRequest 0x09) reaches us because rv003usb does not
+ * handle it.  The USB spec says every endpoint's data toggle goes back to
+ * DATA0 when the configuration is set, but rv003usb only resets the toggle of
+ * the endpoint that received a SETUP.  A host that reopens the endpoints
+ * without a bus reset - a userspace libusb program, or the kernel driver after
+ * the device was already used by something else - starts at DATA0 while the
+ * device still expects the parity left over from the previous session.  A
+ * mismatched OUT packet is acknowledged and then thrown away, and because the
+ * device's toggle does not advance on a mismatch, that endpoint stays dead
+ * (the host sees successful transfers while the firmware never sees the data)
+ * until the device is reset. */
+static void usb_reset_endpoint_toggles(struct rv003usb_internal *ist)
+{
+	int i;
+
+	for (i = 0; i < ENDPOINTS; i++) {
+		ist->eps[i].count = 0;
+		ist->eps[i].toggle_out = 0;
+		/* EP0 data stages start at DATA1, the rest at DATA0 */
+		ist->eps[i].toggle_in = (i == 0) ? 1 : 0;
+	}
+}
+
 void usb_handle_other_control_message(struct usb_endpoint *e, struct usb_urb *s,
 				      struct rv003usb_internal *ist)
 {
 	LogUEvent(s->wRequestTypeLSBRequestMSB, s->wIndex, s->wValue,
 		  s->wLength);
+
+	if (s->wRequestTypeLSBRequestMSB == 0x0900) { /* SET_CONFIGURATION */
+		usb_reset_endpoint_toggles(ist);
+		return;
+	}
 
 	/* request type is not vendor */
 	if (!(s->wRequestTypeLSBRequestMSB & 0x40))
