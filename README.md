@@ -246,11 +246,13 @@ byte at 9600, 115200, 921600 and 3000000 baud (measured baud error 0 % to
 
 **The jumper and flashing do not get along**: while the UART is enabled, PD0 is
 an output driving an idle high line and through the jumper it holds SWIO, so
-`minichlink` fails with `nothing connected to linker`. Disable the port
-(`UART_CONFIG` with `enable = 0`; the module then releases both pins), reset the
-chip with the watchdog (`scripts/wdg_test.py --reset 400`, the watchdog is in the
-default build and needs only USB), or pull the jumper. `uart_test.py` disables
-the port in a `finally:` for exactly this reason.
+`minichlink` fails (`nothing connected to linker`, or `HARTINFO: ffffffff /
+Could not setup interface` after host side pin experiments). Disabling the port
+makes the module release both pins, but that is not always enough - what is
+reliable is a **reset**: `scripts/wdg_test.py --reset 400` arms the watchdog over
+USB and lets it bite, and the watchdog is in the default build. Removing the
+jumper works too. `uart_test.py` disables the port in a `finally:` so a failing
+run does not make things worse.
 
 ### 6. Debugging with GDB
 

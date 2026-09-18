@@ -30,21 +30,31 @@ through the jumper it holds the SWIO line: `minichlink` then reports
     link error, nothing connected to linker (4 = [81 55 01 01]).
     Trying to put processor in hold and retrying.
 
-Three ways out, all of them used here:
+Measured twice more, in two different flavours:
 
-- disable the port - `V003_UART_CONFIG` with `enable = 0` **releases both pins**
-  (back to floating input) instead of leaving the transmitter driving an idle
-  high line.  That is deliberate, and `uart_test.py` does it in a `finally:` so a
-  failing test cannot leave the board unflashable;
-- reset the chip with the watchdog, which is in the default build and needs only
-  the USB link: `V003_WDG_START` with a short timeout and no further `WDG_FEED`
-  (`scripts/wdg_test.py --reset 400`).  After the reset nothing drives PD1;
-- or pull the jumper.
+    link error, nothing connected to linker (4 = [81 55 01 01]).
+    Trying to put processor in hold and retrying.
+    HARTINFO: ffffffff
+    Could not setup interface.
 
-Getting the wedge in the first place is easy: any host-side experiment that
-leaves PD1 (or PD0) driven - the pin inventory in [firmware.md](firmware.md)
-walks every pin and ends with one driven high - costs a reset before the next
-flash.
+The first appears while the firmware is driving PD0 (an enabled UART
+transmitter), the second after host-side pin experiments that drove PD0 low and
+high through the jumper.  Releasing the pins is *not* always enough to get the
+programmer back - both times what did work was a **reset**:
+
+    .venv/bin/python scripts/wdg_test.py --reset 400   # or any short WDG_START
+
+which only needs the USB link (the watchdog is in the default build): after the
+reset nothing has touched PD1 yet and `minichlink` gets in.  Removing the jumper
+works too, and is the only option if the chip is wedged hard enough that USB is
+gone as well.
+
+So the practical rules are: do not drive PD0 or PD1 in the minute before a flash,
+do not run the pin inventory (it drives every pin in turn) right before one, and
+when `minichlink` complains, reset the chip rather than retrying the same
+command.  `V003_UART_CONFIG` with `enable = 0` still releases both pins - that is
+the module being a good citizen, and `uart_test.py` does it in a `finally:` - but
+it is not on its own a guarantee that the next flash will work.
 
 ## Measured: the full duplex round trip
 
