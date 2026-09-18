@@ -20,6 +20,7 @@ endif
 # modules use symbols exported by the core, so they are loaded after it.
 MODULE_NAME:=usb-mfd
 GPIO_MODULE:=v003-gpio
+I2C_MODULE:=v003-i2c
 
 all:
 	make -C $(KERN_DIR) M=`pwd` $(KBUILD_ARGS) modules
@@ -29,10 +30,12 @@ clean:
 
 # convenience for testing on a bench machine
 test: all
+	sudo rmmod $(I2C_MODULE) || true
 	sudo rmmod $(GPIO_MODULE) || true
 	sudo rmmod $(MODULE_NAME) || true
 	sudo insmod $(MODULE_NAME).ko || true
 	sudo insmod $(GPIO_MODULE).ko || true
+	sudo insmod $(I2C_MODULE).ko || true
 	dmesg | tail -20
 
 # the core is a single source module (usb-mfd.c); naming the composite object
@@ -41,3 +44,6 @@ obj-m += $(MODULE_NAME).o
 
 obj-m += $(GPIO_MODULE).o
 $(GPIO_MODULE)-y += gpio.o
+
+obj-m += $(I2C_MODULE).o
+$(I2C_MODULE)-y += i2c.o
