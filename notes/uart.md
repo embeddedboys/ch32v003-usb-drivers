@@ -160,12 +160,23 @@ flash and 1408 bytes of RAM, with **376 bytes of stack margin** measured through
 were taken back by shrinking the zero length vendor OUT request ring from 8
 entries to 4 (`V003_NUM_SIMPLE_REQUESTS`, drops counted by `V003_GET_REQ_DROPS`).
 
+## Kernel side: a TTY on /dev/ttyV0
+
+`kernel/uart.c` -> `v003-uart.ko` is the other consumer of this module's
+protocol: a `tty_port` based TTY, termios mapped onto `V003_UART_CONFIG`, the
+receive path polled (the firmware's ring is the buffer, the poll interval comes
+from the baud rate) and writes flow controlled by the firmware's transmit ring.
+[kernel.md](kernel.md) has the design and the measurements: 32 byte patterns
+round trip byte for byte at 9600 and 115200 through the jumper, and one 256 byte
+`write()` at 9600 - nine times the transmit ring - completes in the time the wire
+needs with every byte coming back.
+
+Closing the TTY disables the firmware port, which is the same "release PD0 and
+PD1" behaviour the flashing section above depends on: a host that closes
+`/dev/ttyV0` hands the debug pin back.
+
 ## Open
 
-- A kernel child driver.  A UART belongs behind a TTY, which is a bigger piece of
-  work than the other children: it needs a `tty_port`/`serdev` decision, a
-  receive path that survives being read by an arbitrary reader, and line
-  discipline configuration mapped onto `V003_UART_CONFIG`.  The protocol is
-  mirrored in `kernel/usb-mfd.h`, the cell is not added yet.
 - Flow control in the other direction (RTS/CTS) is not wired: the remap puts
-  RTS on PC2 and CTS on PC3/PC6, and PC2 is the I2C SCL line.
+  RTS on PC2 and CTS on PC3/PC6, and PC2 is the I2C SCL line, so the TTY driver
+  clears CRTSCTS when a caller asks for it.

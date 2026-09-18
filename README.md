@@ -126,9 +126,10 @@ sudo insmod v003-pwm.ko    # TIM1 channels 1 and 2 as a pwmchip
 sudo modprobe industrialio # the IIO core, needed by the next one
 sudo insmod v003-adc.ko    # ten IIO voltage channels (8 = Vref, 9 = Vcal);
                            # `insmod v003-adc.ko selftest=1` logs both in mV
+sudo insmod v003-uart.ko   # /dev/ttyV0, a TTY on PD0 (TX) / PD1 (RX)
 ./../tests/gpio_chardev.py # GPIO v2 character device test (no libgpiod needed)
 
-sudo rmmod v003-adc v003-pwm v003-wdt v003-spi v003-i2c v003-gpio usb-mfd
+sudo rmmod v003-uart v003-adc v003-pwm v003-wdt v003-spi v003-i2c v003-gpio usb-mfd
 ```
 
 `tests/gpio_chardev.py` drives the chip through the GPIO v2 uAPI with plain
@@ -177,6 +178,14 @@ sudo insmod v003-i2c.ko                                  # bus appears as i2c-N
 sudo insmod v003-i2c.ko selftest=0x50                    # read 8 bytes at word address 0 and log them
 sudo insmod v003-i2c.ko selftest=0x50 selftest_len=16    # ... 16 bytes
 sudo insmod v003-i2c.ko half_period=25                   # ~140 kHz instead of ~280 kHz
+```
+
+`/dev/ttyV0` is created `root:uucp` with mode 0660, so one more rule is needed
+for the TTY test to run without root:
+
+```shell
+echo 'SUBSYSTEM=="tty", KERNEL=="ttyV*", GROUP="plugdev", MODE="0660"' | sudo tee /etc/udev/rules.d/61-tty-v003-plugdev.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=tty
 ```
 
 `/dev/i2c-N` is owned by `root:i2c`.  One udev rule hands it to `plugdev`
@@ -234,6 +243,7 @@ python3 -m venv .venv && .venv/bin/pip install pyusb
 # them unloaded - the interface cannot be claimed twice)
 .venv/bin/python tests/gpio_chardev.py   # GPIO character device
 .venv/bin/python tests/adc_iio_test.py   # ADC through IIO: /sys/bus/iio/devices
+.venv/bin/python tests/uart_tty_test.py  # UART through /dev/ttyV0 (PD0<->PD1 jumper)
 .venv/bin/python scripts/pwm_test.py     # PWM: reported period and both duty extremes
 .venv/bin/python scripts/stress_test.py --mode mixed --iterations 300
 ```

@@ -170,6 +170,82 @@ what says the driver is not inventing values.  Floating inputs (channels 0..3)
 move by 20-40 counts between reads; the internal channels repeat to within one or
 two, and only those are asserted on.
 
+## UART child
+
+`v003-uart.ko` puts a TTY on the firmware's USART1: `/dev/ttyV0`, one port, the
+standard `tty_port` + `tty_operations` shape used by the serial and USB serial
+drivers.  termios maps onto `V003_UART_CONFIG` (baud, 8/9 data bits, parity, 1/2
+stop bits), and the rate the hardware really divides to is written back with
+`tty_termios_encode_baud_rate()`, so `cfgetospeed()` reports 115107 for a
+requested 115200 instead of pretending.  CRTSCTS is cleared and said so in the
+log: this board has no RTS/CTS pins (they are the I2C SCL line and SPI pins).
+
+The receive path is **polled**, because nothing about this link pushes data to the
+host: the firmware holds up to 64 bytes in its ring, and a delayed work reads the
+state, pulls what is there with `V003_UART_READ` and pushes it into the flip
+buffer.  The interval is derived from the configured baud so the ring cannot fill
+between two polls (half a ring per poll, 1-10 ms), and when the rate is too high
+for that - the ring fills faster than one control transfer takes, which is the
+case from about 300 kbaud - the driver logs it and reports `lossy=1` in its
+`stats` attribute instead of quietly losing bytes.
+
+The transmit path uses the firmware's ring as flow control: `write()` sends what
+the ring has room for and returns that count, `write_room()` reports the cached
+room, and the poll work calls `tty_wakeup()` once the ring drains so the TTY layer
+hands over the rest.  Nothing sleeps in an atomic context, and the only buffers
+are the driver's own (the core's bounce buffers carry the transfers).
+
+Two things learned the hard way:
+
+- **A `tty_port` embedded in your own structure must never be `tty_port_put()`.**
+  The last put runs the port's destructor, which ends in `kfree(port)` unless the
+  driver provides a `->destruct` hook - so putting an embedded port frees a
+  pointer *inside* the driver's allocation.  That is an interior free, and it
+  corrupts the allocator: after the first load and unload of this driver, the
+  next load found the device model's power management list already broken
+  (`list_add corruption ... <- device_pm_add <- device_add <-
+  tty_register_device_attr <- v003_uart_probe`) and systemd-udevd,
+  systemsettings and a kworker all oopsed on the same freed object, with the
+  machine needing a reboot.  The port is now destroyed directly
+  (`tty_port_destroy()`, the documented alternative in `tty_port_init()`'s
+  kerneldoc for "refcounting not used") and the device unregistered with
+  `tty_unregister_device()`; there is no `tty_port_put()` in the file.
+
+  *The first write-up of this blamed a double release, because
+  `tty_port_unregister_device()` looked like it released the port as well.
+  Reading `drivers/tty/tty_port.c` shows it does not - it unregisters the device
+  and returns - so the put was not doubling anything, it was the only put, and
+  one was already one too many.*
+- **`sysfs_emit()` may only be called at the start of the buffer.**  Building a
+  multi-line attribute with `sysfs_emit(buf + n, ...)` warns
+  (`invalid sysfs_emit: buf:...`, `fs/sysfs/file.c:757`) and returns 0, so every
+  line after the first silently disappears; `sysfs_emit_at(buf, n, ...)` is the
+  helper for that.
+
+`stats` is a read-only attribute on the tty device: one line of driver state
+(`open`, `baud`, `actual`, `poll_ms`, `lossy`), one of firmware state
+(`enabled`, `tx_queued`, `rx_available`, the two drop counters), one of the
+firmware's traffic counters and one of the driver's.  `stats_reset` (write only,
+therefore root only) asks the device to zero its counters, and opening the port
+does the same thing: those counters are eight bits wide, the receiver's interrupt
+count reaches 255 after a few hundred bytes, and a saturated counter is only
+useful as a difference - which is also what lets a test run as an ordinary user
+measure anything at all.
+
+Measured with `tests/uart_tty_test.py` (five clean runs, PD0<->PD1 jumper in
+place):
+
+| check | result |
+| ----- | ------ |
+| 32 byte pattern at 9600 and 115200 | byte for byte, `tx_bytes`/`rx_bytes` deltas exact, one receiver interrupt per byte, no drop or error counter moving |
+| 256 bytes in one `write()` at 9600 | 252-288 ms (the wire needs 267 ms), all 256 back, `tx_dropped` +0 - the transmit ring holds 31, so this is nine rounds of `tty_wakeup()` |
+| requested vs reported rate | 115200 -> the device reports 115107, which is what the driver writes into termios |
+| close | firmware `enabled=0`: the port gives PD0/PD1 back, which is what makes the board flashable again |
+| reopen | `enabled=1` |
+
+Load, unload and reload three times leaves dmesg clean, which is the check that
+matters for the corruption described above.
+
 ## I2C child
 
 `i2c_algorithm.master_xfer()` maps to the firmware's one-transaction-per-request

@@ -103,11 +103,45 @@ Legend: `[x]` done, `[ ]` open, `[~]` in progress, `[!]` blocked.
       3 Mbps while 1,961 USB control transfers completed with no errors and none
       slower than 20 ms.  HDSEL half duplex was measured too and does *not* echo,
       so it is not used (notes/uart.md).
-- [ ] UART kernel child driver: a UART belongs behind a TTY, which is a bigger
-      piece of work than the other children (`tty_port` or `serdev`, a receive
-      path that survives an arbitrary reader, termios mapped onto
-      `V003_UART_CONFIG`).  The protocol is mirrored in `kernel/usb-mfd.h`; the
-      MFD cell is deliberately not added yet.
+- [x] UART kernel child driver (`kernel/uart.c` -> `v003-uart.ko`): a `tty_port`
+      based TTY at `/dev/ttyV0`, termios mapped onto `V003_UART_CONFIG` with the
+      actual rate written back (115200 requested -> 115107 reported), CRTSCTS
+      refused because these pins do not exist on this board, a polled receive path
+      whose interval comes from the baud rate (half a ring per poll, 1-10 ms, with
+      a `lossy` flag and a log line when the ring cannot be serviced in time), and
+      write flow control against the firmware's transmit ring (`write()` sends
+      what fits, the poll work calls `tty_wakeup()` as it drains).  Only the
+      driver's own buffers are used, nothing sleeps in an atomic context, and no
+      transfer buffer lives on the stack.  Verified with
+      `tests/uart_tty_test.py` (five clean runs): 32 byte patterns round trip byte
+      for byte at 9600 and 115200 through the PD0<->PD1 jumper with the firmware
+      counting the same bytes, exactly one receiver interrupt per byte and zero
+      error counters; one `write()` of 256 bytes at 9600 - nine times the 31 byte
+      transmit ring - completes in 252-288 ms (the wire needs 267 ms) with all 256
+      bytes coming back and no drop counted; closing the port disables the
+      firmware port (`enabled=0`, which is what gives PD0/PD1 back to the bench,
+      PD1 being SWIO); reopening enables it again; and the `stats` attribute
+      reports driver and firmware counters side by side.  Load, unload and reload
+      three times leaves dmesg clean - that sequence is what the first version
+      broke:
+- [x] The first version of the driver corrupted the kernel and this is why the
+      port is now destroyed with `tty_port_destroy()` instead of put: a
+      `tty_port` embedded in the driver's own allocation must never be
+      `tty_port_put()`, because the core's destructor ends in `kfree(port)` - an
+      interior free.  Symptom: after one load/unload, the device model's PM list
+      was already broken (`list_add corruption <- device_pm_add <- device_add <-
+      tty_register_device_attr <- v003_uart_probe`) and systemd-udevd,
+      systemsettings and a kworker oopsed on the freed object; the machine needed
+      a reboot.  Written up in notes/kernel.md ("UART child"), including the
+      correction of the first, wrong explanation (a supposed double release -
+      `tty_port_unregister_device()` does not put the port).
+- [~] One unexplained one-off: in a single run of the flow control step, a 256
+      byte transfer came back with a run of about ten bytes substituted by later
+      data, with the byte counts still consistent.  It has not reproduced in ten
+      clean 256 byte transfers since (five focused trials, five full test runs),
+      and a wire sharing PD1 with the programmer is the most likely explanation
+      (notes/uart.md has the same class of disturbance).  The test now prints the
+      counter deltas for that step so a recurrence is diagnosable.
 - [ ] Flashing with the PD0<->PD1 jumper attached fails while the UART is
       enabled: it holds the SWIO line and `minichlink` reports `nothing connected
       to linker`.  The port releasing both pins when it is disabled and
@@ -205,7 +239,8 @@ Legend: `[x]` done, `[ ]` open, `[~]` in progress, `[!]` blocked.
       `adc.md` (10 bit not 12, measured readings, conversion time, the pin
       table gap), `uart.md` (the remap that works here, PD1 being SWIO, ring
       sizing, the measured loopback), `kernel.md` (MFD structure, transports,
-      the child drivers), `debugging.md` (tooling, twelve case studies, test
+      the child drivers and the UART TTY), `debugging.md` (tooling, twelve case
+      studies, test
       harness traps).
 - [ ] Notes will rot if they are not used: when a measurement or a decision
       changes, the note that describes it has to change in the same turn.
