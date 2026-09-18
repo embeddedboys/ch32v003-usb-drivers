@@ -1,0 +1,13 @@
+diff --git a/minichlink/microgdbstub.h b/minichlink/microgdbstub.h
+index 3b9b574..2f82c05 100644
+--- a/minichlink/microgdbstub.h
++++ b/minichlink/microgdbstub.h
+@@ -304,7 +304,7 @@ void HandleGDBPacket( void * dev, char * data, int len )
+ 			int mslen = strlen( MICROGDBSTUB_MEMORY_MAP ) + 32;
+ 			char map[mslen];
+ 			struct InternalState * iss = (struct InternalState*)(((struct ProgrammerStructBase*)dev)->internal);
+-			snprintf( map, mslen, MICROGDBSTUB_MEMORY_MAP, iss->flash_size, iss->sector_size, iss->ram_size );
++			snprintf( map, mslen, MICROGDBSTUB_MEMORY_MAP, iss->flash_size * 1024 /* kB -> bytes */, iss->sector_size, iss->ram_size );
+ 			SendReplyFull( map );
+ 		}
+ 		else if( StringMatch( data, "Xfer:threads" ) )
