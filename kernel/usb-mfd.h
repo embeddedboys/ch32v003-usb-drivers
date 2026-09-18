@@ -138,6 +138,16 @@ struct v003_pwm_cfg {
 #define V003_UART_RX_PIN 49 /* PD1, also SWIO */
 #define V003_UART_COUNT	 1
 
+/* Ring sizes from the firmware (vendor/uart.h).  The driver needs both: the
+ * receive ring size decides how often it has to poll the device, and the
+ * transmit ring size is the flow control a writer is held to (the firmware
+ * reports how much of it is queued, so an over-estimate here only means a write
+ * that has to be counted as dropped rather than a lost byte).  A ring of N bytes
+ * holds N-1. */
+#define V003_UART_RX_RING_SIZE 64
+#define V003_UART_TX_RING_SIZE 32
+#define V003_UART_TX_RING_HOLDS (V003_UART_TX_RING_SIZE - 1)
+
 #define V003_UART_PARITY_NONE 0
 #define V003_UART_PARITY_EVEN 1
 #define V003_UART_PARITY_ODD  2

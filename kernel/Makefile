@@ -25,6 +25,7 @@ SPI_MODULE:=v003-spi
 WDT_MODULE:=v003-wdt
 PWM_MODULE:=v003-pwm
 ADC_MODULE:=v003-adc
+UART_MODULE:=v003-uart
 
 # the USB identity (VID/PID) is shared with the firmware and the host scripts;
 # it lives in lib/ next to the USB descriptor definitions
@@ -40,6 +41,7 @@ clean:
 # first (`sudo modprobe industrialio`), and on a machine whose modules are
 # compressed `insmod` has to be given an uncompressed copy.
 test: all
+	sudo rmmod $(UART_MODULE) || true
 	sudo rmmod $(ADC_MODULE) || true
 	sudo rmmod $(PWM_MODULE) || true
 	sudo rmmod $(WDT_MODULE) || true
@@ -54,6 +56,7 @@ test: all
 	sudo insmod $(WDT_MODULE).ko || true
 	sudo insmod $(PWM_MODULE).ko || true
 	sudo insmod $(ADC_MODULE).ko || true
+	sudo insmod $(UART_MODULE).ko || true
 	sudo dmesg | tail -20
 
 # the core is a single source module (usb-mfd.c); naming the composite object
@@ -77,3 +80,6 @@ $(PWM_MODULE)-y += pwm.o
 
 obj-m += $(ADC_MODULE).o
 $(ADC_MODULE)-y += adc.o
+
+obj-m += $(UART_MODULE).o
+$(UART_MODULE)-y += uart.o
