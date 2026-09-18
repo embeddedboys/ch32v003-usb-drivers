@@ -19,6 +19,7 @@ endif
 # same split as drivers/mfd/dln2.c with drivers/gpio/gpio-dln2.c.  Child
 # modules use symbols exported by the core, so they are loaded after it.
 MODULE_NAME:=usb-mfd
+GPIO_MODULE:=v003-gpio
 
 all:
 	make -C $(KERN_DIR) M=`pwd` $(KBUILD_ARGS) modules
@@ -28,10 +29,15 @@ clean:
 
 # convenience for testing on a bench machine
 test: all
+	sudo rmmod $(GPIO_MODULE) || true
 	sudo rmmod $(MODULE_NAME) || true
 	sudo insmod $(MODULE_NAME).ko || true
+	sudo insmod $(GPIO_MODULE).ko || true
 	dmesg | tail -20
 
 # the core is a single source module (usb-mfd.c); naming the composite object
 # after the module would make kbuild drop a circular dependency
 obj-m += $(MODULE_NAME).o
+
+obj-m += $(GPIO_MODULE).o
+$(GPIO_MODULE)-y += gpio.o

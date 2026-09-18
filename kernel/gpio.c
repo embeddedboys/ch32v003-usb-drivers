@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
+ * GPIO child driver for the CH32V003 USB MFD.
+ *
+ * This is a platform driver instantiated by the "v003-gpio" MFD cell, exactly
+ * like drivers/gpio/gpio-dln2.c hangs off the dln2 core: all it does is turn
+ * gpiolib callbacks into v003_cmd_*() calls, which the core maps onto the
+ * transport selected by its `transport` parameter.
  *
  * Copyright (C) 2026 embeddedboys
  *
@@ -9,224 +15,163 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
-#include <linux/slab.h>
-#include <linux/usb.h>
-#include <linux/usb/input.h>
-#include <linux/input.h>
-#include <linux/mutex.h>
+#include <linux/platform_device.h>
 #include <linux/gpio/driver.h>
+#include <linux/bitmap.h>
 
-#include "gpio.h"
+#include "usb-mfd.h"
 
-#define DRV_NAME "v003-usb-mfd"
+#define DRV_NAME "v003-gpio"
 
-#define V003_USB_TIMEOUT 200
-
-struct v003_usb_dev {
-	struct usb_device *udev;
-	struct usb_interface *intf;
-
-	/* data endpoints, all on interface 0 */
-	unsigned int ep1_out;
-	unsigned int ep2_out;
-	unsigned int ep3_in;
-
-	/* GPIO */
-	struct gpio_chip gc;
-	u16 ngpio;
-};
-
-static int v003_usb_tx(struct v003_usb_dev *v003, u16 val, u16 idx)
+static int v003_gpio_direction_get(struct gpio_chip *gc, unsigned int offset)
 {
-	struct usb_device *udev = v003->udev;
-
-	return usb_control_msg(udev, usb_sndctrlpipe(udev, 0x00), 0x00, 0x40,
-			       val, idx, NULL, 0, V003_USB_TIMEOUT);
-}
-
-static int v003_usb_rx(struct v003_usb_dev *v003, u16 val, u16 idx, u32 *out)
-{
-	struct usb_device *udev = v003->udev;
-	u32 read;
+	struct v003_dev *v003 = gpiochip_get_data(gc);
+	u32 state = 0;
 	int ret;
 
-	ret = usb_control_msg_recv(udev, usb_rcvctrlpipe(udev, 0x00), 0x00,
-				   0xC0, val, idx, &read, sizeof(read),
-				   V003_USB_TIMEOUT, GFP_KERNEL);
-	if (ret < 0)
+	ret = v003_cmd_in(v003, V003_GPIO_GET_DIRECTION,
+			       V003_GPIO_VAL(offset, 0), &state);
+	if (ret)
 		return ret;
 
-	if (out)
-		*out = read;
-	return 0;
-}
-
-static void v003_usb_gpio_set(struct gpio_chip *gc, unsigned int offset,
-			      int value)
-{
-	struct v003_usb_dev *v003 = gpiochip_get_data(gc);
-
-	dev_info(gc->parent, "%s, offset : %d, value : %d\n", __func__, offset,
-		 value);
-
-	v003_usb_tx(v003, V003_GPIO_VAL(offset, value), V003_GPIO_SET);
-}
-
-static int v003_usb_gpio_get(struct gpio_chip *gc, unsigned int offset)
-{
-	struct v003_usb_dev *v003 = gpiochip_get_data(gc);
-	u32 state = 0;
-
-	dev_info(gc->parent, "%s, offset : %d\n", __func__, offset);
-	v003_usb_rx(v003, V003_GPIO_VAL(offset, 0x00), V003_GPIO_GET, &state);
-
-	return state;
-}
-
-static int v003_usb_gpio_request(struct gpio_chip *gc, unsigned int offset)
-{
-	struct v003_usb_dev *v003 = gpiochip_get_data(gc);
-
-	dev_info(gc->parent, "%s, offset : %d\n", __func__, offset);
-	v003_usb_tx(v003, V003_GPIO_VAL(offset, 0x00), V003_GPIO_REQUEST);
-
-	return 0;
-}
-
-static void v003_usb_gpio_free(struct gpio_chip *gc, unsigned offset)
-{
-	struct v003_usb_dev *v003 = gpiochip_get_data(gc);
-
-	dev_info(gc->parent, "%s, offset : %d\n", __func__, offset);
-	v003_usb_tx(v003, V003_GPIO_VAL(offset, 0x00), V003_GPIO_FREE);
-}
-
-static int v003_usb_gpio_get_direction(struct gpio_chip *gc, unsigned offset)
-{
-	struct v003_usb_dev *v003 = gpiochip_get_data(gc);
-	u32 state = 0;
-
-	v003_usb_rx(v003, V003_GPIO_VAL(offset, 0x00),
-		    V003_GPIO_GET_DIRECTION, &state);
-	dev_info(gc->parent, "%s, offset : %d, value : %d\n", __func__, offset,
-		 state);
+	dev_dbg(gc->parent, "%s: offset %u -> %u\n", __func__, offset, state);
 
 	return state > 0 ? GPIO_LINE_DIRECTION_IN : GPIO_LINE_DIRECTION_OUT;
 }
 
-static int v003_usb_gpio_direction_input(struct gpio_chip *gc, unsigned offset)
+static int v003_gpio_direction_input(struct gpio_chip *gc, unsigned int offset)
 {
-	struct v003_usb_dev *v003 = gpiochip_get_data(gc);
+	struct v003_dev *v003 = gpiochip_get_data(gc);
 
-	dev_info(gc->parent, "%s, offset : %d\n", __func__, offset);
-	v003_usb_tx(v003, V003_GPIO_VAL(offset, 0x00),
-		    V003_GPIO_DIRECTION_INPUT);
+	dev_dbg(gc->parent, "%s: offset %u\n", __func__, offset);
+
+	return v003_cmd_out(v003, V003_GPIO_DIRECTION_INPUT,
+				 V003_GPIO_VAL(offset, 0));
+}
+
+static int v003_gpio_direction_output(struct gpio_chip *gc, unsigned int offset,
+				      int value)
+{
+	struct v003_dev *v003 = gpiochip_get_data(gc);
+
+	dev_dbg(gc->parent, "%s: offset %u value %d\n", __func__, offset, value);
+
+	return v003_cmd_out(v003, V003_GPIO_DIRECTION_OUTPUT,
+				 V003_GPIO_VAL(offset, value));
+}
+
+static int v003_gpio_get(struct gpio_chip *gc, unsigned int offset)
+{
+	struct v003_dev *v003 = gpiochip_get_data(gc);
+	u32 state = 0;
+	int ret;
+
+	ret = v003_cmd_in(v003, V003_GPIO_GET, V003_GPIO_VAL(offset, 0),
+			       &state);
+	if (ret)
+		return ret;
+
+	dev_dbg(gc->parent, "%s: offset %u -> %u\n", __func__, offset, state);
+
+	return state;
+}
+
+static int v003_gpio_set(struct gpio_chip *gc, unsigned int offset, int value)
+{
+	struct v003_dev *v003 = gpiochip_get_data(gc);
+
+	dev_dbg(gc->parent, "%s: offset %u value %d\n", __func__, offset, value);
+
+	return v003_cmd_out(v003, V003_GPIO_SET,
+				 V003_GPIO_VAL(offset, value));
+}
+
+static int v003_gpio_request(struct gpio_chip *gc, unsigned int offset)
+{
+	struct v003_dev *v003 = gpiochip_get_data(gc);
+
+	dev_dbg(gc->parent, "%s: offset %u\n", __func__, offset);
+
+	/* the firmware claims the line and puts it into a safe input mode */
+	return v003_cmd_out(v003, V003_GPIO_REQUEST,
+				 V003_GPIO_VAL(offset, 0));
+}
+
+static void v003_gpio_free(struct gpio_chip *gc, unsigned int offset)
+{
+	struct v003_dev *v003 = gpiochip_get_data(gc);
+
+	dev_dbg(gc->parent, "%s: offset %u\n", __func__, offset);
+
+	v003_cmd_out(v003, V003_GPIO_FREE, V003_GPIO_VAL(offset, 0));
+}
+
+/* Keep the pins the device itself needs (USB D+/D-/DPU and the boot button)
+ * out of the gpiochip: driving them from userspace would disturb the very bus
+ * the requests travel over. */
+static int v003_gpio_init_valid_mask(struct gpio_chip *gc,
+				     unsigned long *valid_mask,
+				     unsigned int ngpios)
+{
+	bitmap_clear(valid_mask, V003_PIN_USB_DP, 1);
+	bitmap_clear(valid_mask, V003_PIN_USB_DM, 1);
+	bitmap_clear(valid_mask, V003_PIN_USB_DPU, 1);
+	bitmap_clear(valid_mask, V003_PIN_BOOT_BTN, 1);
 
 	return 0;
 }
 
-static int v003_usb_gpio_direction_output(struct gpio_chip *gc, unsigned offset,
-					  int value)
+static int v003_gpio_probe(struct platform_device *pdev)
 {
-	struct v003_usb_dev *v003 = gpiochip_get_data(gc);
+	struct v003_dev *v003 = v003_get_dev(pdev);
+	struct gpio_chip *gc;
+	int ret;
 
-	dev_info(gc->parent, "%s, offset : %d, value : %d\n", __func__, offset,
-		 value);
-	v003_usb_tx(v003, V003_GPIO_VAL(offset, value),
-		    V003_GPIO_DIRECTION_OUTPUT);
+	if (!v003) {
+		dev_err(&pdev->dev, "no MFD parent data\n");
+		return -ENODEV;
+	}
 
-	return 0;
-}
-
-static int v003_usb_probe(struct usb_interface *intf,
-			  const struct usb_device_id *id)
-{
-	struct usb_host_interface *alt = intf->cur_altsetting;
-	struct device *dev = &intf->dev;
-	struct v003_usb_dev *v003;
-	int i, ret;
-
-	v003 = devm_kzalloc(dev, sizeof(*v003), GFP_KERNEL);
-	if (!v003)
+	gc = devm_kzalloc(&pdev->dev, sizeof(*gc), GFP_KERNEL);
+	if (!gc)
 		return -ENOMEM;
 
-	v003->udev = usb_get_dev(interface_to_usbdev(intf));
-	v003->intf = intf;
-	usb_set_intfdata(intf, v003);
+	gc->label = DRV_NAME;
+	gc->parent = &pdev->dev;
+	gc->owner = THIS_MODULE;
+	gc->base = -1;
+	gc->ngpio = V003_NGPIO;
+	gc->can_sleep = true;
+	/* setting the callback makes gpiolib allocate the mask */
+	gc->init_valid_mask = v003_gpio_init_valid_mask;
+	gc->request = v003_gpio_request;
+	gc->free = v003_gpio_free;
+	gc->get_direction = v003_gpio_direction_get;
+	gc->direction_input = v003_gpio_direction_input;
+	gc->direction_output = v003_gpio_direction_output;
+	gc->get = v003_gpio_get;
+	gc->set = v003_gpio_set;
 
-	/* find our data endpoints on interface 0 */
-	for (i = 0; i < alt->desc.bNumEndpoints; i++) {
-		struct usb_endpoint_descriptor *epd = &alt->endpoint[i].desc;
-		unsigned int num = usb_endpoint_num(epd);
-
-		if (num == 1 && usb_endpoint_dir_out(epd))
-			v003->ep1_out = num;
-		else if (num == 2 && usb_endpoint_dir_out(epd))
-			v003->ep2_out = num;
-		else if (num == 3 && usb_endpoint_dir_in(epd))
-			v003->ep3_in = num;
+	ret = devm_gpiochip_add_data(&pdev->dev, gc, v003);
+	if (ret) {
+		dev_err(&pdev->dev, "failed to add gpio chip: %d\n", ret);
+		return ret;
 	}
 
-	if (!v003->ep1_out || !v003->ep2_out || !v003->ep3_in) {
-		dev_err(dev, "failed to find data endpoints\n");
-		ret = -ENODEV;
-		goto err_put;
-	}
+	dev_info(&pdev->dev, "%u lines (USB and boot pins reserved)\n",
+		 V003_NGPIO);
 
-	v003->gc.label = DRV_NAME;
-	v003->gc.parent = dev;
-	v003->gc.owner = THIS_MODULE;
-	v003->gc.base = -1;
-	v003->gc.ngpio = V003_NGPIO;
-	v003->gc.can_sleep = true;
-	v003->gc.set = v003_usb_gpio_set;
-	v003->gc.get = v003_usb_gpio_get;
-	v003->gc.request = v003_usb_gpio_request;
-	v003->gc.free = v003_usb_gpio_free;
-	v003->gc.get_direction = v003_usb_gpio_get_direction;
-	v003->gc.direction_input = v003_usb_gpio_direction_input;
-	v003->gc.direction_output = v003_usb_gpio_direction_output;
-
-	ret = devm_gpiochip_add_data(dev, &v003->gc, v003);
-	if (ret < 0) {
-		dev_err(dev, "failed to add gpio chip: %d\n", ret);
-		goto err_put;
-	}
-
-	dev_info(dev, "ready\n");
 	return 0;
-
-err_put:
-	usb_put_dev(v003->udev);
-	usb_set_intfdata(intf, NULL);
-	return ret;
 }
 
-static void v003_usb_disconnect(struct usb_interface *intf)
-{
-	struct v003_usb_dev *v003 = usb_get_intfdata(intf);
-
-	if (!v003)
-		return;
-
-	usb_put_dev(v003->udev);
-	usb_set_intfdata(intf, NULL);
-}
-
-static struct usb_device_id v003_usb_ids[] = {
-	{ USB_DEVICE(0x1209, 0xC303) },
-	{ /* KEEP THIS */ },
+static struct platform_driver v003_gpio_driver = {
+	.probe = v003_gpio_probe,
+	.driver = {
+		.name = DRV_NAME,
+	},
 };
-MODULE_DEVICE_TABLE(usb, v003_usb_ids);
-
-static struct usb_driver v003_gpio_drv = {
-	.name = DRV_NAME,
-	.probe = v003_usb_probe,
-	.disconnect = v003_usb_disconnect,
-	.id_table = v003_usb_ids,
-};
-module_usb_driver(v003_gpio_drv);
+module_platform_driver(v003_gpio_driver);
 
 MODULE_AUTHOR("Wooden Chair <hua.zheng@embeddedboys.com>");
-MODULE_DESCRIPTION("CH32V003 USB to GPIO/I2C/SPI Multi-Func Device Driver");
+MODULE_DESCRIPTION("GPIO driver for the CH32V003 USB MFD");
 MODULE_LICENSE("GPL");
