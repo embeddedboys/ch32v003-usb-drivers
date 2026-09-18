@@ -8,6 +8,7 @@
 #define EP0_IN_ADDR  (USB_EP_DIR_IN | 0)
 #define EP0_OUT_ADDR (USB_EP_DIR_OUT | 0)
 #define EP1_OUT_ADDR (USB_EP_DIR_OUT | 1)
+#define EP2_OUT_ADDR (USB_EP_DIR_OUT | 2)
 #define EP2_IN_ADDR  (USB_EP_DIR_IN | 2)
 #define EP3_OUT_ADDR (USB_EP_DIR_OUT | 3)
 #define EP4_IN_ADDR  (USB_EP_DIR_IN | 4)
@@ -29,6 +30,9 @@ struct usb_ctrl_msg_ctx {
 struct usbd_ep_ctx {
 	u8 ep_addr;
 	u8 *buf;
+	u16 bufsize; /* size of the receive buffer */
+	u16 byte_pos; /* current write position in buf */
+	u16 byte_left; /* remaining bytes of the expected transfer, 0 = per-packet delivery */
 	void (*ep_cb)(u8 *data, int len);
 };
 

@@ -9,7 +9,7 @@ if dev is None:
 
 # get an endpoint instance
 cfg = dev.get_active_configuration()
-intf = cfg[(1, 0)]
+intf = cfg[(0, 0)]
 print(intf)
 
 ep = usb.util.find_descriptor(
