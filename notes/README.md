@@ -24,6 +24,15 @@ separate on purpose:
 | [kernel.md](kernel.md)                   | the Linux side: MFD core, transports, GPIO/I2C/SPI child drivers          |
 | [debugging.md](debugging.md)             | tooling, case studies of every bug found, and test harness traps          |
 
+## Reference documents
+
+| Document                          | Where                                                      |
+| --------------------------------- | ---------------------------------------------------------- |
+| CH32V003 application manual V1.9  | `hardware-docs/CH32V003RM.PDF` (tracked) - RCC, GPIO, SPI1, USB and SysTick registers, and the 2 kB SRAM map |
+| BH1750, AT24C256 datasheets        | `hardware-docs/` (untracked, they belong to the bench)      |
+| Diolan DLN-2 drivers              | the kernel tree: `drivers/mfd/dln2.c`, `drivers/{gpio,i2c/busses,spi}/*-dln2.c` |
+| rv003usb                          | `rv003usb/` (vendored; `rv003usb.h` documents the stack's contracts) |
+
 ## How to use this
 
 - Before changing firmware, read [firmware.md](firmware.md) and
