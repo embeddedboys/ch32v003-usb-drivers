@@ -325,6 +325,11 @@ static int v003_spi_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+	if (spi->cs_pin >= 0 && !(v003_reserved_pins(v003) & (1ULL << spi->cs_pin)))
+		dev_warn(&pdev->dev,
+			 "chip select pin %d is not reserved: load the core with reserved=%d or userspace can take the line over\n",
+			 spi->cs_pin, spi->cs_pin);
+
 	ctlr->dev.parent = &pdev->dev;
 	ctlr->dev.of_node = pdev->dev.of_node;
 	ctlr->bus_num = -1;

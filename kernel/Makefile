@@ -22,6 +22,8 @@ MODULE_NAME:=usb-mfd
 GPIO_MODULE:=v003-gpio
 I2C_MODULE:=v003-i2c
 SPI_MODULE:=v003-spi
+WDT_MODULE:=v003-wdt
+PWM_MODULE:=v003-pwm
 
 # the USB identity (VID/PID) is shared with the firmware and the host scripts;
 # it lives in lib/ next to the USB descriptor definitions
@@ -35,6 +37,8 @@ clean:
 
 # convenience for testing on a bench machine
 test: all
+	sudo rmmod $(PWM_MODULE) || true
+	sudo rmmod $(WDT_MODULE) || true
 	sudo rmmod $(SPI_MODULE) || true
 	sudo rmmod $(I2C_MODULE) || true
 	sudo rmmod $(GPIO_MODULE) || true
@@ -43,6 +47,8 @@ test: all
 	sudo insmod $(GPIO_MODULE).ko || true
 	sudo insmod $(I2C_MODULE).ko || true
 	sudo insmod $(SPI_MODULE).ko || true
+	sudo insmod $(WDT_MODULE).ko || true
+	sudo insmod $(PWM_MODULE).ko || true
 	dmesg | tail -20
 
 # the core is a single source module (usb-mfd.c); naming the composite object
@@ -57,3 +63,9 @@ $(I2C_MODULE)-y += i2c.o
 
 obj-m += $(SPI_MODULE).o
 $(SPI_MODULE)-y += spi.o
+
+obj-m += $(WDT_MODULE).o
+$(WDT_MODULE)-y += wdt.o
+
+obj-m += $(PWM_MODULE).o
+$(PWM_MODULE)-y += pwm.o

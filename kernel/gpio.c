@@ -113,10 +113,16 @@ static int v003_gpio_init_valid_mask(struct gpio_chip *gc,
 				     unsigned long *valid_mask,
 				     unsigned int ngpios)
 {
-	bitmap_clear(valid_mask, V003_PIN_USB_DP, 1);
-	bitmap_clear(valid_mask, V003_PIN_USB_DM, 1);
-	bitmap_clear(valid_mask, V003_PIN_USB_DPU, 1);
-	bitmap_clear(valid_mask, V003_PIN_BOOT_BTN, 1);
+	struct v003_dev *v003 = gpiochip_get_data(gc);
+	u64 reserved = v003_reserved_pins(v003);
+	unsigned int pin;
+
+	/* The device tells us which pins it owns: the USB pins (driving the bus
+	 * we are talking over would be rude), the pins the enabled modules use
+	 * (an I2C bus or an SPI clock is not a GPIO), and the flat range with no
+	 * port behind it.  Userspace must not be able to take those over. */
+	for_each_set_bit(pin, (unsigned long *)&reserved, V003_NGPIO)
+		bitmap_clear(valid_mask, pin, 1);
 
 	return 0;
 }
@@ -158,8 +164,8 @@ static int v003_gpio_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	dev_info(&pdev->dev, "%u lines (USB and boot pins reserved)\n",
-		 V003_NGPIO);
+	dev_info(&pdev->dev, "%u lines, %#llx reserved by the device\n",
+		 V003_NGPIO, v003_reserved_pins(v003));
 
 	return 0;
 }

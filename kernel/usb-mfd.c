@@ -40,6 +40,11 @@ struct v003_dev {
 	struct usb_device *udev;
 	struct usb_interface *intf;
 
+	/* what the firmware reported as its capabilities; cleared when it
+	 * predates the command */
+	struct v003_caps caps;
+	bool have_caps;
+
 	/* serialises vendor transfers (all of them can sleep) */
 	struct mutex lock;
 	/* set on disconnect/suspend so queued calls fail fast */
@@ -59,6 +64,35 @@ struct v003_dev {
 	u8 bounce_tx[V003_CTRL_DATA_MAX];
 	u8 bounce_rx[V003_CTRL_DATA_MAX];
 };
+
+/*
+ * Pins the driver owns on top of what the device reports, as a comma separated
+ * list of flat pin numbers (`insmod usb-mfd.ko reserved=36` for the chip select
+ * line of v003-spi.ko).  Without it userspace can request a line that a child
+ * driver is driving, which is the kind of thing that only shows up as a device
+ * behaving strangely.
+ */
+static int v003_reserved[V003_NGPIO];
+static int v003_reserved_count;
+module_param_array_named(reserved, v003_reserved, int, &v003_reserved_count, 0644);
+MODULE_PARM_DESC(reserved, "flat pin numbers the driver owns, e.g. reserved=36,37");
+
+static u64 v003_reserved_pins_param;
+static int __init v003_reserved_setup(void)
+{
+	int i;
+
+	for (i = 0; i < v003_reserved_count; i++) {
+		if (v003_reserved[i] < 0 || v003_reserved[i] >= V003_NGPIO) {
+			pr_err("v003-usb-mfd: reserved pin %d is out of range\n",
+			       v003_reserved[i]);
+			return -EINVAL;
+		}
+		v003_reserved_pins_param |= 1ULL << v003_reserved[i];
+	}
+
+	return 0;
+}
 
 /* How the child drivers' commands are carried; see V003_TRANSPORT_* in the
  * header for why the default is not simply "the endpoint path". */
@@ -397,6 +431,7 @@ EXPORT_SYMBOL_GPL(v003_data_in);
  * CMD_GET_DEVICE_VER before it registers anything. */
 static int v003_hw_init(struct v003_dev *v003)
 {
+	u8 uid[V003_DEVICE_UID_SIZE];
 	u32 ver = 0;
 	u32 sn = 0;
 	int ret;
@@ -415,22 +450,121 @@ static int v003_hw_init(struct v003_dev *v003)
 	if (ret)
 		return ret;
 
-	dev_info(&v003->intf->dev, "firmware %#x, serial %#x\n", ver, sn);
+	/* the unique id identifies the board; a device that cannot report it is
+	 * still usable, so this only warns */
+	ret = v003_data_in(v003, V003_GET_DEVICE_UID, 0, uid, sizeof(uid));
+	if (ret == sizeof(uid))
+		dev_info(&v003->intf->dev,
+			 "firmware %#x, serial %#x, unique id %*phN\n", ver, sn,
+			 (int)sizeof(uid), uid);
+	else
+		dev_warn(&v003->intf->dev,
+			 "firmware %#x, serial %#x (no unique id: %d)\n", ver, sn,
+			 ret);
 
 	return 0;
 }
 
-static const struct mfd_cell v003_cells[] = {
-	{
-		.name = "v003-gpio",
-	},
-	{
-		.name = "v003-i2c",
-	},
-	{
-		.name = "v003-spi",
-	},
+/*
+ * The cells on offer and the capability bit each one needs.  Only the cells the
+ * device says it has are added, so a firmware with a module compiled out does
+ * not get a child driver probing something that is not there.  The capability
+ * is kept next to the name instead of in mfd_cell.id, which is the platform
+ * device instance number and would rename the devices.
+ */
+struct v003_cell_desc {
+	const char *name;
+	u32 cap;
 };
+
+static const struct v003_cell_desc v003_cell_list[] = {
+	{ "v003-gpio", V003_CAP_GPIO },
+	{ "v003-i2c",  V003_CAP_I2C },
+	{ "v003-spi",  V003_CAP_SPI },
+	{ "v003-wdt",  V003_CAP_WDG },
+	{ "v003-pwm",  V003_CAP_PWM },
+};
+
+const struct v003_caps *v003_capabilities(struct v003_dev *v003)
+{
+	return v003->have_caps ? &v003->caps : NULL;
+}
+EXPORT_SYMBOL_GPL(v003_capabilities);
+
+u64 v003_reserved_pins(struct v003_dev *v003)
+{
+	u64 mask;
+
+	if (!v003->have_caps)
+		mask = V003_RESERVED_PINS_FALLBACK;
+	else
+		mask = (u64)v003->caps.reserved_hi << 32 | v003->caps.reserved_lo;
+
+	/* pins the child drivers themselves take over: a chip select line the SPI
+	 * driver drives, an IRQ pin, anything a board wires to something that is
+	 * not a GPIO.  The device cannot know about those, the driver can. */
+	return mask | v003_reserved_pins_param;
+}
+EXPORT_SYMBOL_GPL(v003_reserved_pins);
+
+/*
+ * Ask the firmware what it contains.  A device that predates the command is not
+ * an error: it is the firmware that had exactly GPIO, I2C and SPI, which is
+ * also what the driver assumed before, so fall back to that.
+ */
+static void v003_read_capabilities(struct v003_dev *v003)
+{
+	struct v003_caps caps;
+	int ret;
+
+	ret = v003_data_in(v003, V003_GET_CAPABILITIES, 0, &caps, sizeof(caps));
+	if (ret != sizeof(caps)) {
+		dev_warn(&v003->intf->dev,
+			 "no capability report (%d), assuming the original GPIO, I2C and SPI\n",
+			 ret);
+		return;
+	}
+
+	v003->caps = caps;
+	v003->have_caps = true;
+
+	dev_info(&v003->intf->dev,
+		 "capabilities %#x%s%s%s%s%s, %u gpio lines, %u adc, %u pwm, %u uart\n",
+		 caps.caps, caps.caps & V003_CAP_GPIO ? " gpio" : "",
+		 caps.caps & V003_CAP_SPI ? " spi" : "",
+		 caps.caps & V003_CAP_I2C ? " i2c" : "",
+		 caps.caps & V003_CAP_WDG ? " wdg" : "",
+		 caps.caps & V003_CAP_FRAME ? " frame" : "", caps.ngpio,
+		 caps.nadc, caps.npwm, caps.nuart);
+}
+
+/* add the cells the firmware reported (or all of them for old firmware) */
+static int v003_add_cells(struct v003_dev *v003)
+{
+	struct mfd_cell *cells;
+	unsigned int i, n = 0;
+
+	cells = devm_kcalloc(&v003->intf->dev, ARRAY_SIZE(v003_cell_list),
+			     sizeof(*cells), GFP_KERNEL);
+	if (!cells)
+		return -ENOMEM;
+
+	for (i = 0; i < ARRAY_SIZE(v003_cell_list); i++) {
+		const struct v003_cell_desc *desc = &v003_cell_list[i];
+
+		if (v003->have_caps && !(v003->caps.caps & desc->cap))
+			continue;
+
+		cells[n].name = desc->name;
+		n++;
+	}
+
+	if (!n)
+		return 0;
+
+	return devm_mfd_add_devices(&v003->intf->dev, PLATFORM_DEVID_NONE, cells,
+				    n, NULL, 0, NULL);
+}
 
 static int v003_probe(struct usb_interface *intf,
 		      const struct usb_device_id *usb_id)
@@ -459,6 +593,8 @@ static int v003_probe(struct usb_interface *intf,
 		goto err_put;
 	}
 
+	v003_read_capabilities(v003);
+
 	if (v003_transport != V003_TRANSPORT_CONTROL) {
 		ret = v003_frame_mode(v003, true);
 		if (ret) {
@@ -469,8 +605,7 @@ static int v003_probe(struct usb_interface *intf,
 		dev_info(dev, "framed endpoint transport enabled\n");
 	}
 
-	ret = devm_mfd_add_devices(dev, PLATFORM_DEVID_NONE, v003_cells,
-				   ARRAY_SIZE(v003_cells), NULL, 0, NULL);
+	ret = v003_add_cells(v003);
 	if (ret) {
 		dev_err(dev, "failed to add mfd devices: %d\n", ret);
 		goto err_put;
@@ -548,7 +683,24 @@ static struct usb_driver v003_usb_driver = {
 	.resume = v003_resume,
 	.id_table = v003_usb_ids,
 };
-module_usb_driver(v003_usb_driver);
+static int __init v003_init(void)
+{
+	int ret;
+
+	ret = v003_reserved_setup();
+	if (ret)
+		return ret;
+
+	return usb_register_driver(&v003_usb_driver, THIS_MODULE, DRV_NAME);
+}
+
+static void __exit v003_exit(void)
+{
+	usb_deregister(&v003_usb_driver);
+}
+
+module_init(v003_init);
+module_exit(v003_exit);
 
 MODULE_AUTHOR("Wooden Chair <hua.zheng@embeddedboys.com>");
 MODULE_DESCRIPTION("CH32V003 USB to GPIO/I2C/SPI multi function device core");
