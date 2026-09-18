@@ -123,11 +123,31 @@ build (with the I2C tracer) was 10264 bytes of flash and 1376 bytes of RAM with
 [firmware.md](firmware.md) for the current numbers), which is why the margin is
 watched after every module rather than once.
 
+## Kernel side: an IIO device
+
+`kernel/adc.c` -> `v003-adc.ko`, an IIO device in direct mode with one
+`iio_chan_spec` per channel (0..7 external, 8 Vref, 9 Vcal), `read_raw()` doing
+one conversion per read and the scale as `AVDD/1024` (`IIO_VAL_FRACTIONAL`, with
+`avdd_mv` a module parameter because the driver cannot measure the board's
+supply).  There are no buffers and no triggers: the device cannot convert
+anything by itself.
+
+The completion tag is what the driver has to handle: it reads the tag, sends
+`V003_ADC_START`, and polls until the tag moves, because the conversion runs in
+the firmware's main loop and a fast reply would otherwise be the previous
+result.  Measured through sysfs (`tests/adc_iio_test.py`, three clean runs):
+
+    in_voltage8_raw = 361..363   -> 1163..1170 mV   (nominal 1200 mV)
+    in_voltage9_raw = 511        -> 1647 mV         (2/4 AVDD = 1650 mV)
+    in_voltage5_raw = in_voltage6_raw = 1023        (the USB pins, driven high)
+    in_voltage0_scale = 3.22265625                  (3300/1024 mV)
+
+The same counts come out of the raw pyusb test, which is the cross-check that
+matters: two host paths, one protocol.  Loading needs `industrialio` first
+(`insmod` on the compressed `industrialio.ko.zst` fails, see
+[kernel.md](kernel.md)).
+
 ## Open
 
-- A kernel child driver: an IIO device is the natural fit (`iio_chan_spec` per
-  channel, `iio_info.read_raw`, the internal channels as `IIO_VOLTAGE` with
-  `IIO_CHAN_INFO_SCALE`). The MFD cell is not added yet on purpose - a cell
-  without a driver would just show up as an unbound platform device.
 - The full channel to pin table, which needs the CH32V003 datasheet (only the
   reference manual and the EVT package are in `hardware-docs/`).

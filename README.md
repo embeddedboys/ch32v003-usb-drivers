@@ -29,7 +29,7 @@ Board together with a WCH-LinkE programmer.
 | `lib/`        | USB descriptor / type definitions, and the shared VID/PID (`v003_usb_ids.h`) |
 | `kernel/`     | Linux driver: `usb-mfd.ko` (core) + `v003-gpio/i2c/spi/pwm/wdt.ko` (children) |
 | `scripts/`    | pyusb host side protocol tests and helpers                                 |
-| `tests/`      | Userspace uAPI tests (GPIO character device, i2c-dev) and the rusb experiment |
+| `tests/`      | Userspace uAPI tests (GPIO character device, i2c-dev, IIO) and the rusb experiment |
 
 Three documents answer three different questions: this README how to build and
 run, [TODO.md](TODO.md) what is done and what was verified on hardware, and
@@ -123,9 +123,12 @@ sudo insmod v003-i2c.ko    # i2c_adapter, PC1 = SDA, PC2 = SCL
 sudo insmod v003-spi.ko    # spi_controller, PC5 = SCK, PC6 = MOSI, PC7 = MISO
 sudo insmod v003-wdt.ko    # the chip's IWDG as a watchdog_device
 sudo insmod v003-pwm.ko    # TIM1 channels 1 and 2 as a pwmchip
+sudo modprobe industrialio # the IIO core, needed by the next one
+sudo insmod v003-adc.ko    # ten IIO voltage channels (8 = Vref, 9 = Vcal);
+                           # `insmod v003-adc.ko selftest=1` logs both in mV
 ./../tests/gpio_chardev.py # GPIO v2 character device test (no libgpiod needed)
 
-sudo rmmod v003-pwm v003-wdt v003-spi v003-i2c v003-gpio usb-mfd
+sudo rmmod v003-adc v003-pwm v003-wdt v003-spi v003-i2c v003-gpio usb-mfd
 ```
 
 `tests/gpio_chardev.py` drives the chip through the GPIO v2 uAPI with plain
@@ -226,6 +229,11 @@ python3 -m venv .venv && .venv/bin/pip install pyusb
 .venv/bin/python scripts/spi_test.py --loopback --soak 150   # with PC6<->PC7 jumper
 .venv/bin/python scripts/adc_test.py     # ADC: internal reference and calibration voltage
 .venv/bin/python scripts/uart_test.py    # UART: needs a jumper between PD0 and PD1
+
+# kernel side (the modules have to be loaded, and the pyusb scripts above need
+# them unloaded - the interface cannot be claimed twice)
+.venv/bin/python tests/gpio_chardev.py   # GPIO character device
+.venv/bin/python tests/adc_iio_test.py   # ADC through IIO: /sys/bus/iio/devices
 .venv/bin/python scripts/pwm_test.py     # PWM: reported period and both duty extremes
 .venv/bin/python scripts/stress_test.py --mode mixed --iterations 300
 ```

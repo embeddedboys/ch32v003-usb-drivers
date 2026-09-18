@@ -127,6 +127,49 @@ Driving a channel through `/sys/class/pwm/` needs root, so the driver carries a
 same callbacks and logs the result - that is what verifies the ns/permille
 translation.  The firmware side is covered by `scripts/pwm_test.py`.
 
+## ADC child
+
+`v003-adc.ko` is an IIO device in direct mode: ten channels (0..7 external, 8 the
+internal 1.2 V reference, 9 the internal calibration voltage), `read_raw()` doing
+one conversion per read, and no buffers or triggers because the device has no way
+to convert anything by itself.  The channel count comes from `nadc` in the
+capability report.
+
+`read_raw()` maps onto the firmware's two step protocol, and the interesting part
+is the completion tag: the conversion runs in the firmware's main loop, so reading
+the result right after `V003_ADC_START` can answer with the *previous* conversion.
+The driver reads the tag first, sends the request, and polls until the tag changes
+(bounded, and it logs what it saw when it gives up).  One read is enough in
+practice - a control IN takes ~3 ms against a 42 us conversion - but that is a
+property of the timing, not of the protocol.
+
+Two details worth knowing:
+
+- the scale is `IIO_VAL_FRACTIONAL` with `avdd_mv` over 1024, so userspace gets
+  exactly `AVDD/1024` (3.22265625 mV on this board) instead of a rounded float.
+  The driver cannot measure the board's supply, hence the parameter;
+- `industrialio` has to be loaded **before** `insmod v003-adc.ko`, otherwise
+  insmod fails with `Unknown symbol devm_iio_device_alloc`.  On the bench machine
+  the module ships compressed (`industrialio.ko.zst`), which `insmod` cannot read
+  either, so the load sequence is `modprobe industrialio` (or `zstdcat ... > /tmp/
+  industrialio.ko` and `insmod` that), then `usb-mfd.ko`, then `v003-adc.ko`.
+
+Verified with `tests/adc_iio_test.py` (three clean runs) against
+`selftest=1` on insmod:
+
+| channel | source | raw | mV | via pyusb |
+| ------- | ------ | --- | -- | --------- |
+| 8 | internal reference | 361-363 | 1163-1170 | 361-366 |
+| 9 | internal calibration, 2/4 AVDD | 511 | 1647 | 511 |
+| 5, 6 | USB pins (driven high) | 1023 | 3297 | 1023 |
+| 7 | USB pin, pulled | 959 | 3087 | 958 |
+
+The last two rows are the useful ones: two independent host paths - sysfs through
+the driver, and the vendor protocol over pyusb - report the same counts, which is
+what says the driver is not inventing values.  Floating inputs (channels 0..3)
+move by 20-40 counts between reads; the internal channels repeat to within one or
+two, and only those are asserted on.
+
 ## I2C child
 
 `i2c_algorithm.master_xfer()` maps to the firmware's one-transaction-per-request

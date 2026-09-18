@@ -253,6 +253,35 @@ the receive interrupt ran once per byte.  Both disagreed by one.
   before its payload arrived. The fix is the two-slot queue with the completion
   marker cleared when the slot is claimed.
 
+### 12. One unexplained wedge: the device stopped enumerating
+
+Seen once, after a session that loaded the whole kernel stack (`usb-mfd.ko` plus
+the six children, the ADC one among them), ran the userspace tests against it,
+and then removed the modules.  The next pyusb run failed with `EIO`, and the host
+log said
+
+    xhci_hcd 0000:05:00.3: Trying to add endpoint 0x1 without dropping it.
+
+repeated once per attempt, then
+
+    usb 1-2: device not accepting address 70, error -71
+    usb 1-2: Device not responding to setup address.
+    usb usb1-port2: unable to enumerate USB device
+
+so it ended with the device not enumerating at all, i.e. the firmware side was
+stuck too.  **What fixed it**: flashing the firmware again over SWIO, which resets
+the chip; the device came back and every test passed.  Note that the software
+reset used elsewhere in these notes (`V003_WDG_START` with no further feed) is no
+help here, because it needs the USB link that is broken.
+
+**It did not reproduce**: the same session was repeated twice afterwards, once
+minimal (`usb-mfd` + `v003-adc`, the IIO test, `rmmod`, pyusb) and once with all
+six children and all the userspace tests, and both were clean.  So the cause is
+not known - a stale xhci endpoint slot, a port reset storm, or something the
+firmware did under driver control, in that order of likelihood.  Written down
+because "the board cannot be flashed and does not enumerate" is exactly the state
+that costs an hour when it is not in the notes.
+
 ## Traps worth remembering
 
 - **A passing test can pass for the wrong reason.** Verify the cause: byte

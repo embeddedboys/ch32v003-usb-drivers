@@ -22,6 +22,31 @@ high.  A **jumper between PD0 and PD1** turns the transmitter into the receiver'
 peer and is what `scripts/uart_test.py` needs, exactly like the PC6<->PC7 jumper
 the SPI loopback test needs.
 
+### Telling whether the jumper is actually connected
+
+There is a software-only way to check it, which is what the loopback failure
+"nothing came back" really needs to be distinguished from a firmware bug: put the
+port at the slowest rate it accepts (733 baud, 13.6 ms per byte) and write a few
+`0x00` bytes, so the transmitter holds the line low for milliseconds at a time,
+then sample **PD0 and PD1 through the GPIO module** (`V003_GPIO_GET`, which only
+reads and does not disturb the UART's pin configuration).
+
+Measured with a good connection: PD0 is low in 17 of 20 samples and PD1 follows
+it in 14 of them (a pair is two control transfers a few milliseconds apart, so a
+sample can land on the stop bit instead - what matters is that PD1 follows at
+all).  Measured with the connection broken: PD0 is still low in 16 of 20 samples
+while PD1 reads high in *every* sample - the transmitter is doing its job and
+nothing reaches the receiver.  That distinction took one measurement and saved a
+debugging session that would otherwise have started in the firmware.
+
+The same symptom has a second cause worth checking first, because it is not
+physical: the WCH-Link holds PD1 (SWIO) while it is attached, and it holds it
+*actively* after a flashing session, strongly enough that PD0 cannot pull the line
+low through the jumper.  Then the loopback stops working with no change to the
+firmware at all (measured: PD0 low, PD1 high, on a bench where the same binary had
+passed three times an hour earlier), and re-plugging the programmer is what fixes
+it.  A chip reset does not: the state is on the programmer's side.
+
 ### The jumper blocks flashing while the port is enabled
 
 PD0 is an alternate function push-pull output when the UART is configured, and

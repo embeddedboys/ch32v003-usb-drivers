@@ -112,11 +112,23 @@ Legend: `[x]` done, `[ ]` open, `[~]` in progress, `[!]` blocked.
       enabled: it holds the SWIO line and `minichlink` reports `nothing connected
       to linker`.  The port releasing both pins when it is disabled and
       `scripts/wdg_test.py --reset` are the two workarounds.
-- [ ] ADC kernel child driver: an IIO device (one `iio_chan_spec` per channel,
-      the two internal channels with a `IIO_CHAN_INFO_SCALE`, `read_raw` mapped
-      onto START + GET).  The MFD cell is deliberately not in
-      `kernel/usb-mfd.c` yet: a cell without a driver would only show up as an
-      unbound platform device.
+- [x] ADC kernel child driver (`kernel/adc.c` -> `v003-adc.ko`): an IIO device in
+      direct mode, one `iio_chan_spec` per channel with the count taken from
+      `nadc` in the capability report, `read_raw` doing one conversion per read
+      and polling the completion tag because the conversion runs in the
+      firmware's main loop (a fast reply would otherwise be the previous
+      result), `read_label` naming the channels, and the scale as
+      `IIO_VAL_FRACTIONAL` `avdd_mv`/1024 (a parameter, since the driver cannot
+      measure the board's supply).  Verified with `tests/adc_iio_test.py` (three
+      clean runs) against `selftest=1`: `in_voltage8_raw` 361..363 = 1163..1170
+      mV (Vref), `in_voltage9_raw` 511 = 1647 mV (Vcal at 2/4 AVDD),
+      `in_voltage5/6_raw` 1023 (the USB pins, driven high), and the scale
+      3.22265625.  The same counts come out of the raw pyusb path, which is the
+      cross-check that the driver is not inventing values.  Loading needs the IIO
+      core first: `insmod v003-adc.ko` fails with `Unknown symbol
+      devm_iio_device_alloc` otherwise, and on this machine `industrialio` ships
+      as `industrialio.ko.zst`, which `insmod` cannot read (use `modprobe`, or
+      `zstdcat` it to /tmp first).
 - [x] Watchdog (`V003_MODULE_WDG`, `V003_CAP_WDG`): `WDG_START`/`WDG_FEED`/
       `WDG_GET_STATE`/`WDG_GET_RESET_CAUSE` in the firmware (WCH's IWDG sequence,
       prescaler picked to fit the 12 bit reload, the *actual* timeout reported
@@ -193,7 +205,7 @@ Legend: `[x]` done, `[ ]` open, `[~]` in progress, `[!]` blocked.
       `adc.md` (10 bit not 12, measured readings, conversion time, the pin
       table gap), `uart.md` (the remap that works here, PD1 being SWIO, ring
       sizing, the measured loopback), `kernel.md` (MFD structure, transports,
-      the child drivers), `debugging.md` (tooling, eleven case studies, test
+      the child drivers), `debugging.md` (tooling, twelve case studies, test
       harness traps).
 - [ ] Notes will rot if they are not used: when a measurement or a decision
       changes, the note that describes it has to change in the same turn.
