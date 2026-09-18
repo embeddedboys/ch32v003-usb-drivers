@@ -112,6 +112,20 @@ model:
 
 ## SPI child
 
+- Pins (fixed by the chip, no remap needed): SPI1 defaults to **PC5 = SCK,
+  PC6 = MOSI, PC7 = MISO** even without touching `AFIO->PCFR1` - the CH32V003
+  maps SPI1 to port C by default (RM table 7-11), which the vendor EVT SPI
+  examples confirm.  In the flat gpiochip numbering these are lines 37/38/39.
+- NSS is the one thing the remap bit moves, PC1 by default and PC0 when
+  remapped, and both collide with this project (PC1 is I2C SDA, PC0 is the
+  board's LED).  The firmware therefore runs the SPI peripheral with software
+  slave management (`SPI_CTLR1_SSM | SPI_CTLR1_SSI`), which leaves NSS unclaimed
+  and keeps PC1 usable for I2C.  Switching to hardware NSS would silently take
+  the I2C data line over.
+- Chip select is a plain GPIO, not the peripheral's NSS: the firmware drives the
+  pin given to `V003_SPI_SET_CS` (0xffff = none, the default) and the kernel
+  driver drives one from its `cs_pin` parameter through the GPIO module.  PC4
+  (line 36, the one used in testing) is free of SPI1 alternate functions.
 - `transfer_one` splits transfers longer than the firmware's 64 byte limit into
   chunks; `set_cs` drives the chip select through the **GPIO module** because a
   Linux *message*, not a transfer, sits between two CS edges (a multi-transfer
