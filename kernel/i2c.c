@@ -33,8 +33,15 @@
 
 #define DRV_NAME "v003-i2c"
 
-/* The firmware reads at most I2C_RX_BUF_SIZE bytes in one transaction. */
+/* The firmware reads at most I2C_RX_BUF_SIZE bytes in one transaction; that
+ * limits a read message, not a write. */
 #define V003_I2C_RX_MAX 64
+
+/* A write message is carried by one control OUT data stage, which holds
+ * V003_CTRL_DATA_MAX bytes including the address byte.  Using the read limit
+ * here as well was a bug: it rejected an AT24C256 page write (2 byte word
+ * address + 64 data bytes = 66) with -EOPNOTSUPP. */
+#define V003_I2C_WRITE_MAX (V003_CTRL_DATA_MAX - 1)
 
 struct v003_i2c {
 	struct v003_dev *v003;
@@ -189,8 +196,18 @@ static int v003_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg *msgs,
 			return -EOPNOTSUPP;
 		}
 
-		if (msg->len > V003_I2C_RX_MAX) {
-			dev_err(&adap->dev, "%u byte message exceeds the %u byte limit\n",
+		if (!(msg->flags & I2C_M_RD) && msg->len > V003_I2C_WRITE_MAX) {
+			/* a write carries its payload in one control data stage */
+			dev_err(&adap->dev,
+				"%u byte write exceeds the %u byte limit\n",
+				msg->len, V003_I2C_WRITE_MAX);
+			return -EOPNOTSUPP;
+		}
+
+		if ((msg->flags & I2C_M_RD) && msg->len > V003_I2C_RX_MAX) {
+			/* a read is limited by the firmware's receive buffer */
+			dev_err(&adap->dev,
+				"%u byte read exceeds the %u byte limit\n",
 				msg->len, V003_I2C_RX_MAX);
 			return -EOPNOTSUPP;
 		}

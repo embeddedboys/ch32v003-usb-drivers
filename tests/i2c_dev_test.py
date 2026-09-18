@@ -215,6 +215,22 @@ def main():
           eeprom_read(bus, args.addr, args.scratch + 5, 4),
           b"\xa5\x5a\x00\xff")
 
+    # --- a full EEPROM page, the message the at24 driver sends -------------
+    # 2 byte word address + 64 data bytes = 66.  This used to be refused with
+    # EOPNOTSUPP because the write limit had been taken from the firmware's
+    # read buffer (64) instead of the control data stage (72 including the
+    # address byte).
+    page = args.scratch & ~0x3F
+    page_backup = eeprom_read(bus, args.addr, page, 64)
+    pattern64 = bytes((0x11 + i * 5) & 0xFF for i in range(64))
+    eeprom_write(bus, args.addr, page, pattern64)
+    time.sleep(0.01)
+    check("64 byte page write reads back",
+          eeprom_read(bus, args.addr, page, 64), pattern64)
+    eeprom_write(bus, args.addr, page, page_backup)
+    time.sleep(0.01)
+    check("page restored", eeprom_read(bus, args.addr, page, 64), page_backup)
+
     # --- error paths ------------------------------------------------------
     try:
         eeprom_read(bus, 0x51, 0, 4)

@@ -89,7 +89,12 @@ model:
 | lone read                                 | `READ` (current address read) |
 | read data                                 | `GET_RX` (control IN data stage) |
 
-- `I2C_M_TEN` and `I2C_M_NOSTART` are refused (`-EOPNOTSUPP`).
+- `I2C_M_TEN` and `I2C_M_NOSTART` are refused (`-EOPNOTSUPP`), and the message
+  limits differ by direction: a write carries its payload in one control data
+  stage (71 bytes next to the address byte), a read is limited by the firmware's
+  receive buffer (64).  Using the read limit for both rejected AT24C256 page
+  writes (66 bytes) until it was measured; `tests/i2c_dev_test.py` now covers
+  that message.
 - SMBus is advertised for the sizes the firmware can actually express
   (`0x7f0001`: quick, byte, byte data, word data) and the i2c core emulates them
   on top of `master_xfer`; `i2cdetect` needs quick to probe at all.  The block
