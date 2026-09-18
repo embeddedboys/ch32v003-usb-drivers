@@ -23,8 +23,7 @@ import time
 import usb.core
 import usb.util
 
-VID = 0x1209
-PID = 0xC303
+from v003_usb import VID, PID
 
 EP1_OUT = 0x01
 EP2_OUT = 0x02

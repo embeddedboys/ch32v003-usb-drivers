@@ -23,6 +23,10 @@ GPIO_MODULE:=v003-gpio
 I2C_MODULE:=v003-i2c
 SPI_MODULE:=v003-spi
 
+# the USB identity (VID/PID) is shared with the firmware and the host scripts;
+# it lives in lib/ next to the USB descriptor definitions
+ccflags-y += -I$(src)/../lib
+
 all:
 	make -C $(KERN_DIR) M=`pwd` $(KBUILD_ARGS) modules
 

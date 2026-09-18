@@ -23,6 +23,7 @@
 #include <linux/unaligned.h>
 
 #include "usb-mfd.h"
+#include "v003_usb_ids.h" /* the shared USB identity */
 
 #define DRV_NAME "v003-usb-mfd"
 
@@ -534,7 +535,7 @@ static int v003_resume(struct usb_interface *intf)
 }
 
 static struct usb_device_id v003_usb_ids[] = {
-	{ USB_DEVICE(0x1209, 0xc303) },
+	{ USB_DEVICE(V003_USB_VID, V003_USB_PID) },
 	{ /* KEEP THIS */ },
 };
 MODULE_DEVICE_TABLE(usb, v003_usb_ids);

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""End-to-end test for the CH32V003 vendor device (VID 1209, PID C303).
+"""End-to-end test for the CH32V003 vendor device (ids from lib/v003_usb_ids.h).
 
 Covers:
   1. generic module: device version / serial number / EP stats
@@ -18,8 +18,7 @@ import time
 import usb.core
 import usb.util
 
-VID = 0x1209
-PID = 0xC303
+from v003_usb import VID, PID
 
 V003_GENERIC_MODULE_ID = 0x00
 

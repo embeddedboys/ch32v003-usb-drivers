@@ -3,7 +3,9 @@
 import usb.core
 import usb.util
 
-dev = usb.core.find(idVendor=0x1209, idProduct=0xC303)
+from v003_usb import find_device
+
+dev = find_device()
 if dev is None:
     raise ValueError("Device not found")
 

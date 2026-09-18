@@ -17,8 +17,7 @@ import time
 
 import usb.core
 
-VID = 0x1209
-PID = 0xC303
+from v003_usb import VID, PID
 
 I2C, GENERIC = 0x03, 0x00
 CONFIG = 0x50 | (I2C << 8)

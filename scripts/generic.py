@@ -5,6 +5,8 @@ import time
 import usb.core
 import usb.util
 
+from v003_usb import find_device
+
 PA1 = 1
 PA2 = 2
 PC0 = 32
@@ -83,7 +85,7 @@ class Generic:
 
 
 def main():
-    dev = usb.core.find(idVendor=0x1209, idProduct=0xC303)
+    dev = find_device()
     if dev is None:
         raise ValueError("Device not found")
 

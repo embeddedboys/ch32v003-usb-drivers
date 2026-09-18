@@ -25,8 +25,7 @@ import time
 import usb.core
 import usb.util
 
-VID = 0x1209
-PID = 0xC303
+from v003_usb import VID, PID
 
 GENERIC_MODULE_ID = 0x00
 GET_CTRL_OUT_DATA = 0x36 | (GENERIC_MODULE_ID << 8)

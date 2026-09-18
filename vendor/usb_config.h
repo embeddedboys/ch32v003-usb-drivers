@@ -31,10 +31,11 @@
 #include <usb_def.h>
 #include <usb_util.h>
 
-#ifdef INSTANCE_DESCRIPTORS
+/* the USB identity lives in one place, shared with the kernel driver and the
+ * host side scripts (see the header for why it is a pid.codes id) */
+#include "v003_usb_ids.h"
 
-#define VENDOR_ID 0x1209
-#define PRODUCT_ID 0xc303
+#ifdef INSTANCE_DESCRIPTORS
 
 //Taken from http://www.usbmadesimple.co.uk/ums_ms_desc_dev.htm
 static const uint8_t device_descriptor[] = {
@@ -60,8 +61,8 @@ static const uint8_t device_descriptor[] = {
 		0x00,		/* bDeviceSubClass */
 		0x00,		/* bDeviceProtocol */
 		0x08,		/* bMaxPacketSize */
-		VENDOR_ID,	/* idVendor */
-		PRODUCT_ID,	/* idProduct */
+		V003_USB_VID,	/* idVendor */
+		V003_USB_PID,	/* idProduct */
 		USB_1_1,	/* bcdDevice */
 		1		/* bNumConfigurations */
 	),

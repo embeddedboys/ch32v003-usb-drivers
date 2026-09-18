@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""I2C bridge test for the CH32V003 vendor device (VID 1209, PID C303).
+"""I2C bridge test for the CH32V003 vendor device (ids from lib/v003_usb_ids.h).
 
 The firmware bit bangs an I2C master on PC1 (SDA) / PC2 (SCL), both open drain
 with external pull-ups, and exposes it through the control transfer data stages:
@@ -32,8 +32,7 @@ import time
 import usb.core
 import usb.util
 
-VID = 0x1209
-PID = 0xC303
+from v003_usb import VID, PID
 
 GENERIC, GPIO, SPI, I2C = 0x00, 0x01, 0x02, 0x03
 GET_FIFO_LEVEL = 0x33 | (GENERIC << 8)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SPI bridge test for the CH32V003 vendor device (VID 1209, PID C303).
+"""SPI bridge test for the CH32V003 vendor device (ids from lib/v003_usb_ids.h).
 
 The firmware runs SPI1 (SCK=PC5, MOSI=PC6, MISO=PC7) as a USB <-> SPI bridge:
 while SPI is enabled, every byte the host writes to EP2 OUT is clocked out on
@@ -35,8 +35,7 @@ import time
 import usb.core
 import usb.util
 
-VID = 0x1209
-PID = 0xC303
+from v003_usb import VID, PID
 
 GENERIC_MODULE_ID = 0x00
 GPIO_MODULE_ID = 0x01
