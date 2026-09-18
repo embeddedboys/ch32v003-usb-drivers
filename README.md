@@ -13,27 +13,428 @@ This project is based on [rv003usb](https://github.com/cnlohr/rv003usb).
 | DPU        | PD5        | 用于重新触发USB枚举                     |
 | BOOT Btn   | PD6        | 用于在BootLoader阶段检测是否要烧录程序  |
 
-The following content assumes you are using the [CH32V003 USB Dev Board]().
+The following content assumes you are using the embeddedboys CH32V003 USB Dev
+Board together with a WCH-LinkE programmer.
+
+## Repository layout
+
+| Path          | Contents                                                                  |
+| ------------- | ------------------------------------------------------------------------- |
+| `AGENTS.md`   | Rules for changing this repository (read before editing)                   |
+| `notes/`      | Knowledge base: measured limits, protocol details, debugging case studies  |
+| `vendor/`     | Main firmware: vendor specific USB device, GPIO, I2C and SPI modules       |
+| `bootloader/` | Upstream USB HID bootloader (VID 1209, PID B003)                           |
+| `rv003usb/`   | Vendored software USB stack (bit-banged low speed device)                  |
+| `lib/`        | USB descriptor / type definitions                                          |
+| `kernel/`     | Linux driver: `usb-mfd.ko` (core) + `v003-gpio/i2c/spi.ko` (children)       |
+| `scripts/`    | pyusb host side protocol tests and helpers                                 |
+| `tests/`      | Userspace uAPI tests (GPIO character device, i2c-dev) and the rusb experiment |
+
+Three documents answer three different questions: this README how to build and
+run, [TODO.md](TODO.md) what is done and what was verified on hardware, and
+[notes/](notes/README.md) why the code looks the way it does.
 
 ## Getting Started
 
-Install toolchain and libs
+### 1. Toolchain
+
+A bare metal RISC-V GCC is required; the build detects `riscv64-unknown-elf-gcc`
+or `riscv-none-elf-gcc` automatically and can be overridden with
+`make PREFIX=...`.
 
 ```shell
-sudo apt install gcc-riscv64-unknown-elf libusb-1.0-0-dev bear
+# Arch / CachyOS
+sudo pacman -S riscv64-unknown-elf-gcc
+# Debian / Ubuntu
+sudo apt install gcc-riscv64-unknown-elf
 ```
 
-Build the flash the firmware
+`minichlink` also needs libusb headers (`libusb-1.0` / `libusb-1.0-0-dev`).
+The `ch32fun` submodule holds both the build rules and `minichlink`:
+
+```shell
+git submodule update --init ch32fun
+```
+
+### 2. Build the firmware
+
 ```shell
 cd vendor
-make
+make build           # produce vendor.bin / vendor.elf
 ```
 
-Flash firmware and listen log. This requires a wch-linke debugger
+`make` also builds and flashes in one step (see below).
+
+### 3. Build the programmer and flash
 
 ```shell
-minichlink -w vendor.bin flash -b -T
+make -C ch32fun/minichlink
+minichlink -w vendor/vendor.bin flash -b     # write and reboot into the firmware
+minichlink -T                                # firmware printf() log over SWIO
 ```
+
+The chip requires one initial programming with a WCH-LinkE; afterwards the
+firmware can also be updated through the USB bootloader (see `bootloader/`).
+
+### 4. Kernel driver
+
+The driver follows `drivers/mfd/dln2.c`: `usb-mfd.ko` is only the USB transport
+and MFD core (it exports `v003_transfer_out()` / `v003_transfer_in()` and the
+transport aware `v003_cmd_out()` / `v003_cmd_in()` and registers the MFD cells),
+and every function of the device is a child platform driver: `v003-gpio.ko`
+(gpiochip), `v003-i2c.ko` (`i2c_adapter`) and `v003-spi.ko`
+(`spi_controller`).  The child modules
+use symbols exported by the core, so they have to be loaded in that order.
+
+```shell
+cd kernel
+make                       # LLVM=1 is passed automatically on clang built kernels
+
+sudo insmod usb-mfd.ko     # checks the firmware version, adds the child cells
+sudo insmod v003-gpio.ko   # gpiochip with 56 lines, USB pins reserved
+sudo insmod v003-i2c.ko    # i2c_adapter, PC1 = SDA, PC2 = SCL
+sudo insmod v003-spi.ko    # spi_controller, PC5 = SCK, PC6 = MOSI, PC7 = MISO
+./../tests/gpio_chardev.py # GPIO v2 character device test (no libgpiod needed)
+
+sudo rmmod v003-spi v003-i2c v003-gpio usb-mfd
+```
+
+`tests/gpio_chardev.py` drives the chip through the GPIO v2 uAPI with plain
+ioctls, so it needs neither libgpiod nor the deprecated sysfs interface, and it
+checks that the reserved lines (D+/D-/DPU and the boot button) cannot be
+requested.
+
+Both modules take the `transport` parameter of the core into account: `0`
+(default) carries commands as control transfers, `1` uses the framed endpoint
+protocol, `2` sends writes as frames and reads over the control path.  Measured
+through the character device, control wins every single operation (set 2.00 ms,
+get 3.00 ms) against the endpoint path (set 3.93 ms, get 6.82 ms), because a low
+speed control transfer finishes a small command in three 1 ms frames while the
+endpoint path needs at least four - the reason is in [Data path
+performance](#data-path-performance).
+
+#### SPI controller
+
+```shell
+sudo insmod v003-spi.ko                       # spi0, no chip select driven
+sudo insmod v003-spi.ko cs_pin=36             # drive PC4 as chip select (active low)
+sudo insmod v003-spi.ko selftest=100          # loop 100 bytes back at probe
+sudo insmod v003-spi.ko selftest=16 selftest_speed=24000000   # ... at full clock
+```
+
+Chip select is driven through the GPIO module rather than by the firmware,
+because a Linux message - not a transfer - is what sits between two CS edges:
+`spi_write_then_read()` and friends put several transfers inside one CS
+assertion, and the firmware only drives its pin around a single transfer (the
+module comment says as much).  `cs_pin` claims that pin at probe, so keep it out
+of the gpiochip users.
+
+`selftest=<bytes>` clocks a pattern through with MOSI jumped to MISO and
+compares what comes back, which the device test board allows with a PC6<->PC7
+jumper.  It runs through the SPI core (`spi_new_device()` + `spi_sync()`), so it
+exercises the same path a client driver would.  Verified: 16 B at 24 MHz, 65 B
+and 100 B at 1 MHz/4 MHz (transfers longer than the firmware's 64 byte limit are
+split into chunks, the 65 byte case covers a chunk of exactly one byte), and
+128 B with the chip select pin disabled.  A plain wire cannot verify bit order -
+every bit returns on the clock edge it left on - so MSB-first stays unproven.
+
+#### I2C adapter
+
+```shell
+sudo insmod v003-i2c.ko                                  # bus appears as i2c-N
+sudo insmod v003-i2c.ko selftest=0x50                    # read 8 bytes at word address 0 and log them
+sudo insmod v003-i2c.ko selftest=0x50 selftest_len=16    # ... 16 bytes
+sudo insmod v003-i2c.ko half_period=25                   # ~140 kHz instead of ~280 kHz
+```
+
+`/dev/i2c-N` is owned by `root:i2c`.  One udev rule hands it to `plugdev`
+(which developers are already in for `/dev/gpiochipN`):
+
+```shell
+echo 'SUBSYSTEM=="i2c-dev", GROUP="plugdev", MODE="0660"' | sudo tee /etc/udev/rules.d/60-i2c-dev-plugdev.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=i2c-dev
+
+.venv/bin/python tests/i2c_dev_test.py        # through the kernel I2C stack
+```
+
+`tests/i2c_dev_test.py` needs nothing but ctypes: it finds the adapter by name,
+checks the advertised functionality, probes an empty address (has to report
+`ENXIO`), writes a marker and a 16 byte page to the AT24C256 and reads them
+back, tries an unaligned 4 byte write, checks that 10 bit addressing is refused
+and puts the page it used back the way it found it.
+
+Without that rule (or as a no-privilege smoke test) the driver can prove the
+same path at probe time and log it: `selftest=<7 bit address>` performs the two
+message write+read transfer (repeated START) the `at24` driver uses.
+
+```
+v003-i2c v003-i2c: self test 0x50[0x00]: e0 e0 e0 e0 e0 e0 e0 e0 a1 09 0a 0b 0c 0d 0e 0f
+v003-i2c v003-i2c: self test read of 0x00 at 0x51 failed: -6      # nothing at 0x51: -ENXIO
+```
+
+#### Why an I2C result needs a completion tag
+
+A control transfer that carries a data stage is answered by the USB interrupt
+*before* the firmware's main loop executes it, so reading the status right after
+sending a request can return the previous request's status - measured:
+`status 0x2` (address NACK, left over from the request before) against `0x1201`
+(OK, 18 bytes) on a re-read.  Two requests that fail the same way are
+indistinguishable by re-reading alone, so `V003_I2C_GET_RESULT` (0x58) returns
+the status *plus* the main loop's request counter in its top byte, and the
+driver polls until that tag changes.  In the normal case the firmware has long
+finished and it costs nothing; when it has not, one extra control transfer fixes
+it.  The framed endpoint protocol gets the same guarantee for free, because the
+main loop builds the response after doing the work, which is where I2C and SPI
+payload commands belong long term.
+
+### 5. Userspace tests
+
+```shell
+python3 -m venv .venv && .venv/bin/pip install pyusb
+
+.venv/bin/python scripts/v003_test.py   # generic module, EP data path, GPIO
+.venv/bin/python scripts/spi_test.py    # SPI bridge
+.venv/bin/python scripts/spi_test.py --loopback --soak 150   # with PC6<->PC7 jumper
+.venv/bin/python scripts/stress_test.py --mode mixed --iterations 300
+```
+
+`spi_test.py --loopback` requires a jumper between PC6 (MOSI) and PC7 (MISO);
+with it, 150 random transfers over each of the two SPI paths pass with zero
+mismatches (~105 round trips/s on the endpoint path, ~83 transfers/s on the
+control path). A plain wire cannot verify the bit order - every bit returns on
+the clock edge it left on - so MSB-first/CPOL/CPHA still follow `SPI_CTLR1`
+without independent proof.
+
+### 6. Debugging with GDB
+
+`minichlink -G` also serves a GDB stub on port 3333, so the firmware can be
+inspected and flashed with the toolchain's `riscv-none-elf-gdb`:
+
+```shell
+# terminal + gdb stub (it owns the WCH-Link until it is stopped)
+./ch32fun/minichlink/minichlink -G &
+
+riscv-none-elf-gdb vendor/vendor.elf \
+    -ex "target remote :3333" \
+    -ex "break handle_gpio_out_request" -ex "continue"
+
+# write the firmware through GDB instead of minichlink -w
+riscv-none-elf-gdb -q -batch vendor/vendor.elf \
+    -ex "target remote :3333" -ex "load" -ex "detach" -ex "quit"
+```
+
+Registers, memory and firmware variables are readable (e.g.
+`p/x ep3_tx_head`), the CPU can be halted, stepped and continued, and the
+firmware `printf()` log keeps streaming in the stub's terminal. Stop the stub
+before running other `minichlink` commands - it holds the programmer.
+
+GDB `load` requires `patches/ch32fun-gdb-flash-memory-map.patch`: the stub
+declared the flash region as `iss->flash_size` (kB) where the memory map wants
+bytes, so GDB saw 16 bytes of flash and refused to use flash writes. Apply it
+with:
+
+```shell
+git -C ch32fun apply ../patches/ch32fun-gdb-flash-memory-map.patch
+make -C ch32fun/minichlink
+```
+
+## Device
+
+The firmware enumerates as a vendor specific device (VID:PID `1209:c303`,
+class `0xFF`) with one interface and three interrupt endpoints:
+
+| Endpoint  | Default behaviour                              | With SPI enabled        |
+| --------- | ---------------------------------------------- | ----------------------- |
+| EP1 OUT   | payload is echoed to the EP3 IN FIFO           | echoed                  |
+| EP2 OUT   | payload is echoed to the EP3 IN FIFO           | clocked out on MOSI     |
+| EP3 IN    | echoes the EP1/EP2 OUT FIFO (8 bytes / packet) | MISO bytes              |
+
+Firmware requests are vendor control transfers: `bmRequestType` `0x40` (OUT) or
+`0xC0` (IN), `bRequest` `0`, `wValue` carries the payload and `wIndex` carries
+`cmd | (module << 8)`.
+
+| `wIndex` | Module  | Request             | Payload / result                                            |
+| -------- | ------- | ------------------- | ----------------------------------------------------------- |
+| `0x30`   | generic | `GET_DEVICE_VER`    | IN, `0x1010`                                                |
+| `0x31`   | generic | `GET_DEVICE_SN`     | IN, `0x12345678`                                            |
+| `0x32`   | generic | `GET_EP_STATS`      | IN, `wValue`: 0-2 RX bytes of EP0/1/2, 3 EP3 IN packets, 4 EP3 IN bytes. OUT with `wValue == 0xff` resets the counters |
+| `0x33`   | generic | `GET_FIFO_LEVEL`    | IN, bytes queued in the EP3 IN FIFO                         |
+| `0x34`   | generic | `GET_FIFO_DROPS`    | IN, bytes dropped because the FIFO was full                 |
+| `0x36`   | generic | `GET_CTRL_OUT_DATA` | IN, the data stage of the last vendor control-OUT (≤ 64 bytes), clamped to what was received |
+| `0x37`   | generic | `GET_CTRL_OUT_SEQ`  | IN, number of vendor OUT requests the firmware main loop has finished. SPI/I2C transfers run outside the USB interrupt, so a host has to wait for this to advance before reading their result |
+| `0x06`   | gpio    | `SET`               | OUT, `wValue = (pin << 8) \| value`                         |
+| `0x07`   | gpio    | `GET`               | IN, current pin level                                       |
+| `0x08`   | gpio    | `REQUEST`           | OUT, claims the pin and puts it into input mode (pull-up/down) |
+| `0x09`   | gpio    | `FREE`              | OUT, releases the pin                                       |
+| `0x0A`   | gpio    | `GET_DIRECTION`     | IN, 1 = input, 0 = output                                   |
+| `0x0B`   | gpio    | `DIRECTION_INPUT`   | OUT                                                         |
+| `0x0C`   | gpio    | `DIRECTION_OUTPUT`  | OUT, `wValue = (pin << 8) \| value`                         |
+| `0x40`   | spi     | `ENABLE`            | OUT, `wValue` 0/1: route EP2 OUT to MOSI, MISO to EP3 IN     |
+| `0x41`   | spi     | `CONFIG`            | OUT, `wValue = (prescaler << 8) \| mode`, mode bits: 1 CPHA, 2 CPOL, prescaler = `SPI_CTLR1.BR` (0 = /2 … 7 = /256) |
+| `0x42`   | spi     | `GET_STATE`         | IN, `(prescaler << 16) \| (mode << 8) \| enabled`            |
+| `0x43`   | spi     | `GET_STATS`         | IN, bytes clocked out on MOSI                               |
+| `0x44`   | spi     | `SET_CS`            | OUT, `wValue` = pin index, or `0xffff` for none: the pin is driven low for a `TRANSFER` |
+| `0x45`   | spi     | `TRANSFER`          | OUT with a data stage (≤ 64 bytes): clock the payload out on MOSI, chip select framed, keep the MISO bytes for `GET_RX` |
+| `0x46`   | spi     | `GET_RX`            | IN, the MISO bytes of the last `TRANSFER`, clamped to its length |
+| `0x47`   | spi     | `GET_CS`            | IN, the configured chip select pin or `0xffff`              |
+| `0x50`   | i2c     | `CONFIG`            | OUT, `wValue` = half period in **100 ns units** (0 = keep, default 12 -> ~280 kHz measured; 25/50 for poorer wiring): PC1/PC2 as open drain, resets the bus |
+| `0x51`   | i2c     | `WRITE`             | OUT with a data stage `[addr << 1][bytes...]`, result in `GET_STATUS` |
+| `0x52`   | i2c     | `READ`              | OUT with a data stage `[addr << 1 \| 1][count]`, bytes in `GET_RX` |
+| `0x53`   | i2c     | `GET_RX`            | IN, the bytes read by the last `READ`, clamped to its length |
+| `0x54`   | i2c     | `GET_STATUS`        | IN, `ok`/`ADDR_NACK`/`DATA_NACK`/`stretch`, bits 8-15 = bytes moved, 16-23 = failing byte |
+| `0x55`   | i2c     | `SCAN`              | OUT, `wValue` = first 7 bit address: probes 32 addresses       |
+| `0x56`   | i2c     | `GET_SCAN`          | IN, ACK bitmap of that scan, bit 0 = the first probed address  |
+| `0x57`   | i2c     | `WRITE_READ`        | OUT with a data stage `[addr << 1 \| 0][bytes to write...]` and `wValue` = bytes to read: START, write, **repeated START** (no STOP), read into `GET_RX`. The idiom register based devices need |
+| `0x58`   | i2c     | `GET_CFG`           | IN, half period in microseconds                             |
+| `0x5a`   | i2c     | `TRACE`             | OUT, `wValue` != 0 arms the SDA/SCL clock tracer, 0 stops it |
+| `0x5b`   | i2c     | `GET_TRACE`         | IN, `wValue` = byte offset: raw trace entries (delta, SDA level) |
+| `0x5c`   | i2c     | `GET_TRACE_INFO`    | IN, `count \| (overflow << 8) \| (trace unit in ticks << 16)` |
+| `0x5d`   | i2c     | `WAIT_READY`        | OUT with a data stage `[addr << 1]`, `wValue` = timeout in ms: ACK poll the device until it answers (its write cycle finished) |
+| `0x5e`   | i2c     | `GET_WAIT_US`       | IN, duration of the last `WAIT_READY` in microseconds        |
+| `0x5f`   | i2c     | `MEM_WRITE_READ`    | OUT with a data stage `[addr << 1][word address][data...]` and `wValue` = (read count) \| (1 byte word address << 8) \| (ACK poll << 9): page write, optional ACK poll, then a Random Read of the same word address into `GET_RX` - the whole memory cycle in one request |
+GPIO pins use the ch32fun numbering: `PA1 = 1`, `PA2 = 2`, `PC0..PC7 = 32..39`,
+`PD0..PD7 = 48..55`. `PD3`/`PD4`/`PD5` are the USB pins and `PD6` is the boot
+button, so they are not usable as GPIO.
+
+SPI1 uses the fixed alternate function pins `SCK = PC5`, `MOSI = PC6`,
+`MISO = PC7`. Chip select is either driven by the firmware around
+`V003_SPI_TRANSFER` (configured with `V003_SPI_SET_CS`, must not be one of the
+SPI pins) or toggled by the host through the GPIO module.
+
+I2C is a **software master** on `SDA = PC1` / `SCL = PC2` (open drain, external
+pull-ups required - most breakout modules bring their own). The firmware drives
+START/STOP itself. The alternative mappings (`PD1`/`PD0`, or `PC5`/`PC6` with
+`I2C1_RM = 1x`) are not used because `PC5`/`PC6` are the SPI pins. A software
+master was chosen over the CH32V003 I2C peripheral deliberately: it supports
+clock stretching, reports exactly which byte was not acknowledged, and recovers
+the bus (nine clocks + STOP) when a slave is left mid byte. Because the pins
+rise slowly through the pull-ups, the bit timing waits for a released line to
+actually be high, and `CONFIG` burns one throwaway probe on address 0x08 to
+absorb the glitch of reconfiguring the pins (that glitch used to make the very
+first transaction afterwards misread its ACK slot).
+
+Both the I2C transactions and the SPI control path run in the firmware main
+loop, not in the USB interrupt, so the host has to wait for
+`GET_CTRL_OUT_SEQ` to advance before reading their result - otherwise it can
+still see the previous one.  Wait until the counter has *settled* before taking
+the baseline, not merely until it changes: a request that has not been picked up
+yet makes the next wait succeed immediately.
+
+### I2C notes for memory devices (verified against the AT24C256 datasheet)
+
+- `WRITE_READ` is the datasheet's *Random Read*: a dummy write of the two word
+  address bytes followed by a repeated START and the device address with R/W=1.
+  Two byte addressing, most significant byte first; `READ` alone is a *Current
+  Address Read* from the device's internal counter.
+- Page writes are 64 bytes and **roll over inside the same page**: the low six
+  address bits increment, so a write that crosses a page boundary silently
+  overwrites the start of that page.  Split long writes at page boundaries.
+- tWR is 5 ms max and the device does not answer during it.  Use `WAIT_READY`
+  to ACK poll instead of sleeping: the module on this bench finishes a write
+  cycle in **326 us** (measured, min = median = max over 30 writes), so a fixed
+  5 ms wait wastes most of it.
+- The **link**, not the EEPROM, sets the throughput: one control transfer costs
+  ~3 ms on this low speed link.  A write + ACK poll + read round needs about 14
+  of them (~42 ms with tight polling), which `MEM_WRITE_READ` reduces to about
+  six - measured **18 ms, a 2.3x win**.  Making the I2C clock faster does not
+  help such small operations at all; fewer control transfers does.
+- A full 64 byte page commits in ~2.9 ms (ACK polled) against ~0.33 ms for a
+  four byte write, so page sized traffic benefits from the poll far more than
+  small writes do.
+- It does help *inside* one request though: 64 bytes cost ~11.5 ms of bit
+  banging at 50 kHz, which is why the datasheet's 400 kHz (or 1 MHz) matters for
+  page sized transfers.
+- fSCL may go to 400 kHz at 1.7 V and 1 MHz from 2.5 V up.  The software master
+  defaults to a 1.2 us half period, which measures ~280 kHz on the wire (a bit
+  costs about three half periods).  That is inside the device rating and was
+  verified with a **300 round random page safe soak with zero failures**;
+  halving the clock makes it slower without buying reliability.
+
+Two transfer paths exist:
+
+- `V003_SPI_TRANSFER` (control path): one atomic, chip select framed transfer of
+  up to 64 bytes for the price of one control-OUT plus one control-IN. Prefer
+  this for register style transfers.
+- EP2 OUT / EP3 IN streaming: every byte written to EP2 OUT is clocked out
+  immediately and the sampled MISO byte is queued to the EP3 IN FIFO. Only
+  worth it for larger transfers, because the interrupt endpoints are polled
+  once per 1 ms frame.
+
+## Data path performance
+
+Measured on hardware from the host side, 64 bytes in each direction per round
+trip (see the informational output of `scripts/v003_test.py`):
+
+| Transport                                            | Round trip | Throughput |
+| ---------------------------------------------------- | ---------- | ---------- |
+| control-OUT data stage + control-IN (EP0, 64 B each) | 6.0 ms     | 20.8 KiB/s |
+| EP1/EP2 OUT + EP3 IN (interrupt, 8 B packets)        | 32.3 ms    | 3.9 KiB/s  |
+
+The interrupt endpoints are polled once per 1 ms low speed frame, so moving 64
+bytes needs 8 frames in each direction, while a single control transfer carries
+a 64 byte data stage. For small SPI/I2C style transfers the control path wins;
+the endpoint path only pays off with larger, pipelined transfers (a kernel
+driver submitting multiple URBs) or when the firmware has work to do between
+packets.
+
+### Framed endpoint protocol
+
+`vendor/frame.{h,c}` adds a command protocol on the endpoint path, modelled on
+`drivers/mfd/dln2.c`:
+
+```
+request   [size u16][id u16][echo u16][handle u16][arg/payload...]   EP2 OUT
+response  [size u16][id u16][echo u16][handle u16][result u16][...]  EP3 IN
+```
+
+`handle` is the module (0 generic, 1 GPIO, ...), `id` the command byte, `echo` a
+host tag that comes back in the response (`0` means "no answer wanted") and
+`size` the total length, which is what makes a stream of frames self delimiting.
+A bad length drops the rest of the packet instead of desynchronising the parser.
+`V003_SET_FRAME_MODE` (0x39, a zero length control OUT) switches EP2/EP3 between
+the frame stream and the raw echo stream, and `V003_GET_FRAME_STATS` (0x3a)
+reports `frames handled << 16 | frames dropped`.  The interrupt only accumulates
+bytes and drains the response FIFO; commands run in the main loop.
+`scripts/frame_test.py` covers all of it (26 checks).
+
+Measured, the framed path is *not* faster for single small commands:
+
+| Operation                                            | Control (EP0)    | Framed (EP2/EP3) |
+| ---------------------------------------------------- | ---------------- | ---------------- |
+| gpio set (kernel driver, through `/dev/gpiochipN`)   | 2.00 ms (500/s)  | 3.93 ms (254/s)  |
+| gpio get                                             | 3.00 ms (333/s)  | 6.82 ms (147/s)  |
+| sequential request/response (pyusb)                  | 2.98 ms          | 7.77 ms          |
+
+A low speed control transfer finishes a small request in three 1 ms frames
+(SETUP, data, status).  The endpoint path needs at least four: a two packet
+request, then the host must poll EP3 for a response that cannot be in the same
+frame - and rv003usb answers *every* IN token, with a zero length packet while
+it has nothing queued (it has no NAK support), so the first poll is wasted.  The
+framed path is the right tool for fire-and-forget bursts, batched commands and
+payloads too big for one control data stage, which is why the control path is
+still the default (`transport=0`).
+
+### Two hard firmware budgets
+
+Both were found the hard way and constrain everything the firmware can do:
+
+- **~4.5 us inside the USB interrupt.**  A vendor request handler runs before
+  rv003usb acknowledges the SETUP packet; 203 ticks of the 48 MHz SysTick work
+  and 13 loop iterations (about 260 ticks) already fail, after which the host
+  reports the transfer as EIO.  This is why control-OUT data stages, frames and
+  the I2C bit banging all run from the main loop.  `V003_GET_TIMING` (0x3f) with
+  `wValue` = loop iterations re-measures the budget on any build.
+- **~790 bytes of stack.**  The stack starts at 0x20000800 and grows down into
+  the statics, so an oversized buffer does not fault, it silently corrupts
+  whatever sits at the end of `.bss`.  `V003_GET_STACK_FREE` (0x3b) reports what
+  is left (measured by painting the free RAM at boot and scanning it from the
+  main loop - the scan takes ~150 us, 30x the interrupt budget, so it must never
+  run in the interrupt).  After shrinking the rv003usb UEvent ring
+  (`RV003USB_NUMUEVENTS`, 8 instead of 32: 512 bytes of RAM for a debug channel)
+  and the endpoint buffers, `.bss` ends at 0x200004f4 and at most 272 of the 780
+  bytes are used (the deepest consumer used to be the debug printf path).  Printing the UEvent ring (`make DEBUG_EVENTS=1`) is off by
+  default because the bit-banged output blocks the main loop, which then stops
+  servicing the requests it owes the host.
 
 ## Develop
 
@@ -48,8 +449,9 @@ Go to vscode, Press `Ctrl + Shift + P` , the search `clangd: Restart language se
 ## Reference
 
 - [rv003usb](https://github.com/cnlohr/rv003usb)
+- [ch32fun](https://github.com/cnlohr/ch32fun)
 - [Programming with PyUSB 1.0](https://github.com/pyusb/pyusb/blob/master/docs/tutorial.rst)
 
 ## Links
 
-- [CH32V003 USB Dev Board]()
+- [TODO list](TODO.md)
