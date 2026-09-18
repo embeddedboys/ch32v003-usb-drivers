@@ -46,6 +46,7 @@ SET_FRAME_MODE = 0x39
 GET_FRAME_STATS = 0x3A
 GET_DEVICE_VER = 0x30
 GET_DEVICE_SN = 0x31
+GET_DEVICE_UID = 0x3C
 GET_EP_STATS = 0x32
 GET_FIFO_LEVEL = 0x33
 GET_FIFO_DROPS = 0x34
@@ -206,8 +207,12 @@ def main():
     check("GET_DEVICE_VER value", rsp["value"], 0x1010)
     check("GET_DEVICE_VER handle", rsp["handle"], GENERIC)
     check("GET_DEVICE_VER size", rsp["size"], FRAME_HDR + 2 + 4)
-    check("GET_DEVICE_SN", dev.request(GET_DEVICE_SN, GENERIC)["value"],
-          0x12345678)
+    # the serial is the first word of the factory unique id, read here over the
+    # control path because the frame payload is too small for all 12 bytes
+    uid = bytes(dev.ctrl(0, GET_DEVICE_UID, 12))
+    check("GET_DEVICE_SN is the first word of the unique id",
+          dev.request(GET_DEVICE_SN, GENERIC)["value"],
+          int.from_bytes(uid[:4], "little"))
 
     print("\n== framed path: gpio ==")
     dev.request(GPIO_DIRECTION_OUTPUT, GPIO, (PC0 << 8) | 1)

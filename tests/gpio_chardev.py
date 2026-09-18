@@ -169,7 +169,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--chip-label", default="v003-gpio")
     ap.add_argument("--out", type=int, default=32, help="output line offset")
-    ap.add_argument("--in", dest="inp", type=int, default=36,
+    ap.add_argument("--in", dest="inp", type=int, default=35,
                     help="input line offset")
     ap.add_argument("--bench", type=int, default=0,
                     help="measure N set/get operations per line")

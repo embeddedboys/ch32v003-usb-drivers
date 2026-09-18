@@ -12,6 +12,7 @@ Covers:
 Requires pyusb, e.g.  python3 -m venv .venv && .venv/bin/pip install pyusb
 """
 
+import struct
 import sys
 import time
 
@@ -31,8 +32,27 @@ def generic_cmd(cmd):
     return v003_cmd(cmd, V003_GENERIC_MODULE_ID)
 
 
+WDG_MODULE = 0x04
+def wdg_cmd(cmd): return cmd | (WDG_MODULE << 8)
+WDG_START = wdg_cmd(0x60)
+WDG_FEED = wdg_cmd(0x61)
+WDG_FEED_KEY = 0xAAAA
+WDG_GET_STATE = wdg_cmd(0x62)
+WDG_GET_RESET_CAUSE = wdg_cmd(0x63)
+WDG_RST = {1: "pin", 2: "power-on", 4: "software", 8: "watchdog",
+           16: "window watchdog", 32: "low power"}
+
 GET_DEVICE_VER = generic_cmd(0x30)
 GET_DEVICE_SN = generic_cmd(0x31)
+GET_DEVICE_UID = generic_cmd(0x3C)
+GET_CAPABILITIES = generic_cmd(0x3D)
+DEVICE_UID_SIZE = 12
+
+CAP_GPIO, CAP_SPI, CAP_I2C, CAP_ADC, CAP_PWM, CAP_UART, CAP_FRAME = (
+    1 << 0, 1 << 1, 1 << 2, 1 << 3, 1 << 4, 1 << 5, 1 << 6)
+CAP_WDG, CAP_PWR = 1 << 7, 1 << 8
+# struct v003_caps: caps, ngpio, nadc, npwm, nuart, reserved_lo, reserved_hi
+CAPS_STRUCT = "<IBBBBII"
 GET_EP_STATS = generic_cmd(0x32)
 GET_FIFO_LEVEL = generic_cmd(0x33)
 GET_FIFO_DROPS = generic_cmd(0x34)
@@ -160,8 +180,68 @@ def main():
 
     # --- 1. generic module --------------------------------------------
     check("device version", d.u32(GET_DEVICE_VER), 0x1010)
-    check("device serial", d.u32(GET_DEVICE_SN), 0x12345678)
     check("dropped vendor requests", d.u32(GET_REQ_DROPS), 0)
+
+    # --- 1b. the factory unique id (ESIG, chapter 15 of the RM) ---------
+    # 96 bits are documented; this part leaves the third word blank, so the
+    # value is compared against the programmer's own read rather than assumed
+    uid = d.ctrl_in_data(GET_DEVICE_UID, DEVICE_UID_SIZE)
+    check("unique id length", len(uid), DEVICE_UID_SIZE)
+    check("unique id is not blank", uid not in (b"\x00" * 12, b"\xff" * 12), True)
+    check("unique id is stable", d.ctrl_in_data(GET_DEVICE_UID, 12), uid)
+    check("device serial is the first id word",
+          d.u32(GET_DEVICE_SN), int.from_bytes(uid[:4], "little"))
+    # the same value has to be what the host sees as the serial number string,
+    # which exercises the descriptor built at boot as well
+    check("USB serial number is the id in hex", d.dev.serial_number, uid.hex())
+    print(f"info unique id: {uid.hex()}")
+
+    # --- 1c. capability report ------------------------------------------
+    # A host reads this instead of assuming what the firmware contains, which is
+    # what makes build time module selection safe.
+    caps_raw = d.ctrl_in_data(GET_CAPABILITIES, 16)
+    caps, ngpio, nadc, npwm, nuart, rlo, rhi = struct.unpack(CAPS_STRUCT, caps_raw)
+    reserved = rlo | (rhi << 32)
+    print(f"info capabilities {caps:#x}, ngpio {ngpio}, reserved {reserved:#018x}")
+    check("capabilities: gpio is offered", bool(caps & CAP_GPIO), True)
+    check("capabilities: spi is offered", bool(caps & CAP_SPI), True)
+    check("capabilities: i2c is offered", bool(caps & CAP_I2C), True)
+    check("capabilities: frame protocol is offered", bool(caps & CAP_FRAME), True)
+    check("capabilities: watchdog is offered", bool(caps & CAP_WDG), True)
+    check("capabilities: adc is offered", bool(caps & CAP_ADC), True)
+    check("capabilities: pwm is offered", bool(caps & CAP_PWM), True)
+    check("capabilities: uart is offered", bool(caps & CAP_UART), True)
+    check("capabilities: gpio line count", ngpio, 56)
+    # the channel counts are what a child driver sizes itself from
+    check("capabilities: adc channel count", nadc, 10)
+    check("capabilities: pwm channel count", npwm, 2)
+    check("capabilities: uart count", nuart, 1)
+    for pin, what in ((16, "16..31 has no port"), (33, "I2C SDA"),
+                      (1, "PA1, PWM channel 2"), (50, "PD2, PWM channel 1"),
+                      (48, "PD0, UART TX"), (49, "PD1, UART RX / SWIO"),
+                      (34, "I2C SCL"), (37, "SPI SCK"), (38, "SPI MOSI"),
+                      (39, "SPI MISO"), (51, "USB D+"), (52, "USB D-"),
+                      (53, "USB DPU"), (54, "boot button")):
+        check(f"capabilities: pin {pin} reserved ({what})",
+              bool(reserved & (1 << pin)), True)
+
+    # --- 1d. watchdog ---------------------------------------------------
+    # The IWDG cannot be stopped once started, so the destructive part of this
+    # test (letting it expire) lives in scripts/wdg_test.py --reset; here the
+    # commands and the reset cause are checked, which is where a regression
+    # would show up first.
+    cause = d.u32(WDG_GET_RESET_CAUSE)
+    check("watchdog reset cause is a known set",
+          cause & ~0x3F, 0)
+    print("info reset cause: "
+          + (", ".join(n for b, n in WDG_RST.items() if cause & b) or "none"))
+    feed_fail = d.u32(WDG_GET_STATE)
+    check("watchdog reports not running with the 0 and 0xffff timeouts",
+          feed_fail & 1, 0)
+    # feeding without starting must not arm anything (the key has to match too)
+    d.ctrl(WDG_FEED_KEY, WDG_FEED)
+    check("feeding an unstarted watchdog keeps it off",
+          d.u32(WDG_GET_STATE) & 1, 0)
 
     # --- 2. EP1/EP2 OUT reception -------------------------------------
     # start from a known state: SPI off, FIFO drained, stats cleared
