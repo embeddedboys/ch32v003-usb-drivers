@@ -24,6 +24,7 @@ I2C_MODULE:=v003-i2c
 SPI_MODULE:=v003-spi
 WDT_MODULE:=v003-wdt
 PWM_MODULE:=v003-pwm
+ADC_MODULE:=v003-adc
 
 # the USB identity (VID/PID) is shared with the firmware and the host scripts;
 # it lives in lib/ next to the USB descriptor definitions
@@ -35,8 +36,11 @@ all:
 clean:
 	make -C $(KERN_DIR) M=`pwd` $(KBUILD_ARGS) clean
 
-# convenience for testing on a bench machine
+# Convenience for testing on a bench machine.  The ADC child needs the IIO core
+# first (`sudo modprobe industrialio`), and on a machine whose modules are
+# compressed `insmod` has to be given an uncompressed copy.
 test: all
+	sudo rmmod $(ADC_MODULE) || true
 	sudo rmmod $(PWM_MODULE) || true
 	sudo rmmod $(WDT_MODULE) || true
 	sudo rmmod $(SPI_MODULE) || true
@@ -49,7 +53,8 @@ test: all
 	sudo insmod $(SPI_MODULE).ko || true
 	sudo insmod $(WDT_MODULE).ko || true
 	sudo insmod $(PWM_MODULE).ko || true
-	dmesg | tail -20
+	sudo insmod $(ADC_MODULE).ko || true
+	sudo dmesg | tail -20
 
 # the core is a single source module (usb-mfd.c); naming the composite object
 # after the module would make kbuild drop a circular dependency
@@ -69,3 +74,6 @@ $(WDT_MODULE)-y += wdt.o
 
 obj-m += $(PWM_MODULE).o
 $(PWM_MODULE)-y += pwm.o
+
+obj-m += $(ADC_MODULE).o
+$(ADC_MODULE)-y += adc.o

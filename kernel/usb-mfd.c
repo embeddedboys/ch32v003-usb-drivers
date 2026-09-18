@@ -483,6 +483,7 @@ static const struct v003_cell_desc v003_cell_list[] = {
 	{ "v003-spi",  V003_CAP_SPI },
 	{ "v003-wdt",  V003_CAP_WDG },
 	{ "v003-pwm",  V003_CAP_PWM },
+	{ "v003-adc",  V003_CAP_ADC },
 };
 
 const struct v003_caps *v003_capabilities(struct v003_dev *v003)
