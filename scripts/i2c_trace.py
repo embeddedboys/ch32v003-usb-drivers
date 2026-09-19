@@ -9,7 +9,9 @@ what was sent from that point on.
 
     scripts/i2c_trace.py [--addr 0x0100] [--count 1]
 
-Requires pyusb.
+Requires pyusb, and a firmware built with `make TRACE=1`: the tracer is a debug
+facility that costs 136 bytes of RAM and 224 of flash, so it is off by default and
+this script says so instead of failing when the command is not there.
 """
 
 import sys
@@ -44,6 +46,19 @@ def main():
     if dev is None:
         print("FAIL: device not found")
         return 1
+
+    # the tracer is a build option (make TRACE=1): without it the command is not
+    # there and a zero length answer is all the firmware can give
+    try:
+        dev.set_configuration()
+        info = bytes(dev.ctrl_transfer(0xC0, 0x00, 0, GET_TRACE_INFO, 4,
+                                       timeout=2000))
+    except usb.core.USBError as exc:
+        print(f"FAIL: {exc}")
+        return 1
+    if not info or int.from_bytes(info, "little") == 0:
+        print("SKIP: this firmware has no I2C trace (build it with TRACE=1)")
+        return 0
 
     def ctrl(val, idx, ln=0):
         return dev.ctrl_transfer(0x40 if ln == 0 else 0xC0, 0x00, val, idx, ln,

@@ -1,4 +1,13 @@
 #!/usr/bin/env python3
+"""Blink a line through the *legacy* sysfs GPIO interface: /sys/class/gpio.
+
+  .venv/bin/python tests/gpio_sysfs.py <line>
+
+This needs CONFIG_GPIO_SYSFS in the kernel, which modern kernels no longer set
+(removed as deprecated; the character device is the supported interface, and
+tests/gpio_chardev.py uses that).  When the interface is absent this says so and
+exits without pretending to have tested anything.
+"""
 import os
 import sys
 import time
@@ -21,6 +30,10 @@ def sysfs_write(path, value):
 def sysfs_read(path):
     with open(path, "r") as f:
         return f.read()
+
+
+def interface_available():
+    return os.path.isdir(SYS_GPIO) and os.path.exists(EXPORT)
 
 
 def test_one_gpio(gpio_num: int):
@@ -73,7 +86,15 @@ def test_one_gpio(gpio_num: int):
 """
 
 if __name__ == "__main__":
-    try:
-        test_one_gpio(int(sys.argv[1]))
-    except:
+    if len(sys.argv) != 2:
         print("Usage: {} <gpio_num>".format(sys.argv[0]))
+        sys.exit(2)
+
+    if not interface_available():
+        print(f"SKIP: {SYS_GPIO} is not there, so this kernel has no sysfs GPIO "
+              "interface")
+        print("      (CONFIG_GPIO_SYSFS; the character device is what "
+              "tests/gpio_chardev.py uses)")
+        sys.exit(0)
+
+    sys.exit(0 if test_one_gpio(int(sys.argv[1])) else 1)
