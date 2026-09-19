@@ -72,16 +72,17 @@ there:
 
 ```shell
 cd vendor
-make                              # everything:             11552 B flash, 1408 B RAM
-make MODULES=gpio,spi,i2c,wdg,pwm,adc  # without UART:      10036 B, 1176 B
-make MODULES=gpio                 # GPIO only:               5624 B, 1028 B
-make TRACE=0                      # without the I2C tracer: 11328 B, 1304 B
+make                              # every module:             12556 B flash, 1284 B RAM
+make MODULES=gpio,spi,i2c,wdg,pwm,adc  # without UART:       10084 B, 1112 B
+make MODULES=gpio,spi,i2c,wdg,pwm,adc,uart  # without PWR:  11376 B, 1240 B
+make MODULES=gpio                 # GPIO only:                 5624 B,  900 B
+make TRACE=1                      # with the I2C tracer:      12788 B, 1424 B (a debug facility)
+make UEVENTS=4                    # a deeper debug ring (2 entries by default)
 ```
 
-`pwr` is a reserved name with no source file yet; the build refuses it outright
-(`#error`) rather than advertising a capability that has no code behind it.
-`gpio spi i2c wdg pwm adc uart` are the modules that exist, and the device
-reports which of them it was built with.
+`gpio spi i2c wdg pwm adc uart pwr` are the modules that exist - every name the
+capability report has - and the device reports which of them it was built with,
+so a host never probes a module that is not there.
 
 ```shell
 cd vendor
@@ -238,6 +239,9 @@ python3 -m venv .venv && .venv/bin/pip install pyusb
 .venv/bin/python scripts/spi_test.py --loopback --soak 150   # with PC6<->PC7 jumper
 .venv/bin/python scripts/adc_test.py     # ADC: internal reference and calibration voltage
 .venv/bin/python scripts/uart_test.py    # UART: needs a jumper between PD0 and PD1
+.venv/bin/python scripts/pwr_test.py     # sleep, standby and the wake reasons
+.venv/bin/python scripts/combo_test.py   # every module in one session, before and after a sleep
+.venv/bin/python scripts/pwr_test.py --wdg --uart   # the watchdog refusal, UART wake
 
 # kernel side (the modules have to be loaded, and the pyusb scripts above need
 # them unloaded - the interface cannot be claimed twice)
@@ -261,6 +265,21 @@ attached the receive pin cannot be used on its own. With the jumper in place the
 transmit path is the receiver's peer, and 32 byte patterns round trip byte for
 byte at 9600, 115200, 921600 and 3000000 baud (measured baud error 0 % to
 0.16 %, interrupts exactly one per byte, no framing or overrun errors).
+
+`combo_test.py` is the one that asks whether the modules work *together*: one
+working round trip per module in a single session, then the same again after a
+standby sleep, plus the two pads an ADC channel shares with another module (PC4
+with the SPI chip select, PA1 with PWM channel 2 - the ADC reads them without
+taking them away from what drives them).
+
+`pwr_test.py` arms sleeps the firmware would otherwise never take: nothing sleeps
+unless a host asks, every sleep has an auto-wake timer as a backstop, and a sleep
+longer than the watchdog timeout is refused. A **standby** sleep releases the USB
+pull-up first, so the device leaves the bus and comes back with the same serial
+number; a **sleep** stays attached but silent for its duration (the host's own
+traffic ends it early). While the device is in standby the debug interface is off
+as well, so the programmer cannot reach the chip either - the auto-wake timer is
+what brings it back, which is why there is no way to arm a sleep without one.
 
 **The jumper and flashing do not get along**: while the UART is enabled, PD0 is
 an output driving an idle high line and through the jumper it holds SWIO, so
@@ -334,6 +353,9 @@ Firmware requests are vendor control transfers: `bmRequestType` `0x40` (OUT) or
 | `0x70`   | pwm     | `PWM_SET`           | OUT data stage: `{channel, enable, duty permille, period ns}` |
 | `0x71`   | pwm     | `PWM_GET`           | IN data stage, `wValue` = channel: what the timer really does      |
 | `0x72`   | pwm     | `PWM_GET_INFO`      | IN, number of channels                                       |
+| `0xa0`   | pwr     | `PWR_ARM`           | OUT data stage `{duration_ms, mode, wake, detach, delay_ms}`: sleep (10 ms..30 s), standby, optional release of the USB pull-up. Refused as a whole if out of range or longer than the watchdog timeout |
+| `0xa1`   | pwr     | `PWR_GET_STATE`     | IN data stage, 28 bytes: sleep count, AWU ticks and the nominal ms, capabilities, the last refusal, mode, wake reason and divider |
+| `0xa2`   | pwr     | `PWR_GET_INFO`      | IN, `(max ms << 16) \| min ms` = `(30000 << 16) \| 10`  |
 | `0x90`   | uart    | `UART_CONFIG`       | OUT data stage `{baud, data_bits, parity, stop_bits, enable}`: refused as a whole if a field is out of range |
 | `0x91`   | uart    | `UART_GET_CFG`      | IN data stage, the same struct with `actual_baud` filled in (what BRR really divides to) |
 | `0x92`   | uart    | `UART_WRITE`        | OUT data stage: queue bytes for the transmitter |

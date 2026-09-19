@@ -18,6 +18,7 @@ those three numbers.
 | `vendor/pwm.c`   | module 0x05: TIM1 channels on PD2 and PA1                              |
 | `vendor/adc.c`   | module 0x06: ADC1, one conversion per request                          |
 | `vendor/uart.c`  | module 0x07: USART1 on PD0/PD1, a ring in each direction               |
+| `vendor/pwr.c`   | module 0x08: sleep and standby, wake sources, the wake reason          |
 | `rv003usb/`      | the software USB stack (vendored, patchable)                           |
 
 Two contexts, and the split between them is the single most important thing to
@@ -136,26 +137,33 @@ rest is `vendor.c`'s control path, the descriptors and the ring code):
 | `pwm.c`                 | 157   | 592 B   | 24 B |
 | `adc.c` (peripheral)    | 199   | 628 B   | 12 B |
 | `uart.c` (peripheral)   | 360   | 1292 B  | 128 B |
+| `pwr.c` (peripheral)    | 330   | 1128 B  | 44 B  |
 | `rv003usb.c`            | 463   | ~0.87 kB | 208 B |
 
-Current budget, default build (`gpio,spi,i2c,wdg,pwm,adc,uart`, I2C tracer on):
-flash 11552/16384 (**4,832 bytes free**), RAM 1408/2048, with the stack
-measurement reporting **376 bytes free**.  The same build with `TRACE=0` is
-11328/1304, so the tracer is still the single biggest thing a slimmer build can
-give up.
+Current budget, default build (every module, I2C tracer on): flash 12740/16384
+(**3,644 bytes free**), RAM 1424/2048, with the stack measurement reporting
+**352 bytes free** on a fresh boot and **448 bytes** after the whole test suite has
+exercised every module - the number that matters, because the canary reports the
+deepest use it has seen, and a mixed workload gets closer to the statics than an
+idle device does (measured: 308 bytes before `scripts/combo_test.py` started
+asserting it).  The I2C tracer, which is now off by default, is still the biggest
+single thing a build can give up or take back: `make TRACE=1` costs 232 bytes of
+flash and 140 of RAM.
 
 - **Flash is not the constraint.** The peripheral wrappers are all of the
-  `spi.c`/`gpio.c` class and measured: PWM 592 bytes, ADC 628, UART 1292 (it is
-  the only one with two rings and an interrupt handler).  The default build has
-  4.8 kB of flash free.
-- **RAM is the constraint.** Statics are 1408 bytes and the rest is stack, so a
-  new buffer is paid for out of that 376 byte margin (a floor of ~150-200 bytes
-  of margin is what the current call chains need).  PWM took 24 bytes and ADC 12,
-  both state rather than buffers; UART took 128 for its two rings, the largest
-  single allocation any module has asked for, and it was paid for by shrinking
-  the zero length vendor OUT request ring from 8 entries to 4
+  `spi.c`/`gpio.c` class and measured: PWM 592 bytes, ADC 628, UART 1292, PWR 1128
+  (the AWU divider table and two sleep paths).  The default build has 3.6 kB of
+  flash free.
+- **RAM is the constraint.** Statics are 1424 bytes and the rest is stack, so a
+  new buffer is paid for out of that 352 byte margin (a floor of ~150-200 bytes
+  of margin is what the current call chains need).  PWM took 24 bytes, ADC 12 and
+  PWR 44, all state rather than buffers; UART took 128 for its two rings, the
+  largest single allocation any module has asked for.  Those were paid for by
+  shrinking the zero length vendor OUT request ring from 8 entries to 4
   (`V003_NUM_SIMPLE_REQUESTS`, 32 bytes, drops visible through
-  `V003_GET_REQ_DROPS`) because the rule is to keep ~350 bytes of margin.
+  `V003_GET_REQ_DROPS`) and the debug UEvent ring from 8 entries to 4 and then 2
+  (`make UEVENTS=4` brings it back), because the rule is to keep ~350 bytes of
+  margin.
 - Easy RAM to reclaim first, and it argues for the same mechanism: the I2C clock
   tracer (136 B of RAM, 224 B of flash) is a debug facility, and the UEvent ring
   (128 B for 8 entries) could shrink.  Gating those buys a UART ring outright.
@@ -167,8 +175,10 @@ and the second half of that is in place:
   so it can grow by appending fields: which modules exist (`V003_CAP_*`), the
   channel counts, and **which pins the device owns**.  It is a `const` in flash
   and the data stage points straight at it, so it costs no RAM at all.  The
-  device currently reports `0xff` (gpio, spi, i2c, adc, pwm, uart, wdg and the
-  framed protocol), 56 gpio lines and the reserved mask below.
+  device currently reports `0x1ff` (gpio, spi, i2c, adc, pwm, uart, wdg, pwr and
+  the framed protocol), 56 gpio lines and the reserved mask below.  That is every
+  module the firmware has, which is also why the guard that used to refuse the
+  reserved names (`uart`, then `pwr`) is gone: there are none left.
 - The reserved pin mask covers the USB pins, the pins of the modules that are
   enabled, and the flat range 16..31 that has no port behind it - so userspace
   cannot write into an address that is not a GPIO, cannot drive the bus it is
@@ -178,7 +188,7 @@ and the second half of that is in place:
   module compiled out does not get a child driver probing it.  A device without
   the command is treated as the original GPIO+I2C+SPI build.
 - **Compile time selection works**: `make MODULES=gpio,spi,i2c` (default) or
-  `make MODULES=gpio,spi`, `make MODULES=gpio`, plus `make TRACE=0` for the I2C
+  `make MODULES=gpio,spi`, `make MODULES=gpio`, plus `make TRACE=1` for the I2C
   clock tracer.  Measured on the same tree:
 
   | build                       | flash | RAM   |
@@ -193,10 +203,9 @@ and the second half of that is in place:
   added one cell, and `v003-i2c.ko` loaded without a device and stayed idle
   instead of probing something that is not there.
 - `V003_MODULE_*` macros default to today's set, so a plain `make` is unchanged
-  (byte for byte in flash and RAM).  `adc`, `pwm`, `wdg` and `uart` are
-  implemented and in the default build; `pwr` is still a reserved name (the macro
-  and the capability bit exist, the module does not, and enabling it is a compile
-  error rather than a silently absent module).
+  (byte for byte in flash and RAM).  `adc`, `pwm`, `wdg`, `uart` and `pwr` are
+  all implemented and in the default build; the reserved-name compile error that
+  guarded the ones without an implementation is gone with the last of them.
 - Compatibility: capabilities are additive.  A host that does not know the
   command treats the device as the old fixed set (that is what the core does
   when the read fails).
@@ -217,6 +226,23 @@ Two constraints a new module has to respect, both already learned here:
   20 ms ([uart.md](uart.md)).  Interrupts are not nested here, so a peripheral
   ISR can only *delay* the USB handler by its own length - anything longer than a
   few microseconds is still not allowed.
+
+## Modules together
+
+The modules are designed to share the device, and `scripts/combo_test.py` is what
+checks it: one round trip per module in one session, then all of them again after
+a standby sleep.  Two rules came out of that exercise, both of them from failures:
+
+- **A module may read a pad another module drives, but must not take it away.**
+  The ADC's channel 2 is PC4 (the SPI chip select) and its channel 1 is PA1 (PWM
+  channel 2), so the ADC configures no pin at all; the module that drives a pin
+  re-asserts its mode when it matters (`pwm_apply()` does, which is what keeps a
+  channel driving after a host has read that pin's level through the GPIO module).
+- **What a module depends on outside its own registers has to be re-asserted.**
+  A standby wake calls `SystemInit()`, which rewrites `RCC->CFGR0`: the ADC's
+  prescaler went back to its reset value and conversions silently ran four times
+  faster (42 us -> 11 us) while every reading stayed correct.  The divider is now
+  written per conversion.
 
 ## What this board actually has
 

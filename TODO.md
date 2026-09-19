@@ -43,7 +43,9 @@ Legend: `[x]` done, `[ ]` open, `[~]` in progress, `[!]` blocked.
       SPI pins, and the USB pins.  `reserved=<pin>,...` on the core adds pins the
       *driver* owns (a chip select), and `v003-spi.ko` warns when its `cs_pin` is
       missing from the mask - that closes the SPI chip select item.
-- [x] The I2C clock tracer is behind `make TRACE=0` (-224 B flash, -136 B RAM,
+- [x] The I2C clock tracer is behind `make TRACE=1` and **off by default** since the
+      power module landed (-232 B flash, -140 B RAM when enabled); `scripts/i2c_trace.py`
+      skips with that explanation when the build has no tracer.  Originally: -224 B flash, -136 B RAM,
       the knob lives in `vendor/i2c.h`).  The UEvent ring size is already a knob
       (`RV003USB_NUMUEVENTS`); exposing it as a Makefile variable is still open.
 - [x] PWM (`V003_MODULE_PWM`, `V003_CAP_PWM`): TIM1 channels 1 and 2 on PD2 and
@@ -173,12 +175,65 @@ Legend: `[x]` done, `[ ]` open, `[~]` in progress, `[!]` blocked.
       reporting `watchdog` as the cause with the watchdog off.  Costs 484 B of
       flash and 8 B of RAM; it is part of the default build now, and the
       capability bit keeps slimmer builds honest.
-- [ ] Power management (`V003_MODULE_PWR`, `V003_CAP_PWR` reserved): sleep and
-      standby entry, wakeup source configuration, and reporting the wake reason.
-      It needs its own design pass because a sleeping device stops answering USB,
-      so the core's suspend/resume and the userspace test flow both have to agree
-      on how it is entered and left.
+- [x] Power management (`V003_MODULE_PWR`, `V003_CAP_PWR`, module id 0x08,
+      commands 0xa0-0xa2): sleep and standby entry, the AWU as a mandatory
+      backstop, the board's boot button as an optional wake source, an optional
+      release of the USB pull-up so a standby sleep re-enumerates cleanly, and a
+      refusal (with a reason) for an out of range request or a sleep longer than
+      the IWDG timeout.  Nothing sleeps unless a host asks, and the sleep starts
+      from the main loop a few ms after the request so the host sees its own
+      reply.  Verified with `scripts/pwr_test.py`: 100/300/1000 ms sleeps come
+      back by themselves with reason AWU and the nominal duration the request
+      asked for (quantised to the AWU tick: 50x2 ms, 37x8 ms, 62x16 ms); standby
+      with detach leaves the bus and returns, and two durations fitted give a
+      sleep running at **0.992 of nominal (LSI about 127 kHz** against the nominal
+      128 kHz) plus a fixed 468 ms for the host to re-enumerate; ten sleeps in a
+      row are counted with no USB fallout; an out of range duration, an unknown
+      mode, an unknown wake source and a second armed request are refused without
+      sleeping; with the IWDG armed at 2 s a 5 s sleep is refused and letting the
+      watchdog bite resets the chip with the reset cause reported; and the boot
+      button ends a 20 s standby sleep - measured once at 10.5 s with reason
+      `button`, which needs the upstream EXTI hook because rv003usb's handler
+      would otherwise read the press as USB traffic.  Costs 1128 B of flash and
+      44 B of RAM; the stack margin is now **352 B**, kept above the ~350 B rule
+      by shrinking the debug UEvent ring to 2 entries (`make UEVENTS=4`).
+- [x] Four power-management approaches were measured and do not work; all four are
+      in notes/pwr.md so nobody has to rediscover them: an EXTI *event* line does
+      not latch INTFR (so the button wake could not be named until the hook), the
+      USB handler eats its own pending bit, the USB stack's `se0_windup` moves on
+      any bus traffic including SOFs (so "the host poked us" is not reportable),
+      and a peripheral timer does not advance during a sleep (so the firmware
+      cannot measure it - the host can, and does).
 
+## Do the modules work together?
+
+- [x] `scripts/combo_test.py`: one working round trip per module (GPIO, I2C, SPI,
+      ADC, PWM, UART, the watchdog's and the power module's state) in a single
+      session, repeating all of them after a standby sleep, plus the two pads an
+      ADC channel shares with another module.  Verified: capabilities `0x1ff`,
+      stack margin 352 bytes, every round trip before and after the sleep, and the
+      documented 42 us conversion time both times.
+- [x] **The ADC used to disarm the SPI chip select silently**: it configured PC4
+      as an analog input when it came up, the SPI module only writes the output
+      data register for its select, and `spi_test` checks data - so everything
+      passed.  Measured with the GPIO module's direction query (output after
+      `SPI_SET_CS`, input after one conversion of the *internal* reference).
+      Configuring per channel instead killed the PWM output on PA1 (ADC channel 1
+      is PA1).  The module now configures no pin at all; the modules that drive
+      pins re-assert their mode (`pwm_apply()`), and `combo_test` asserts the pin
+      survives a conversion.  Case study 13 in notes/debugging.md.
+- [x] **A standby wake reset the ADC clock**: the wake path calls `SystemInit()`,
+      which rewrites `RCC->CFGR0` and left ADCPRE at its reset value, so the ADC
+      clock went from 6 MHz to 24 MHz - measured as a conversion time of 11 us
+      after a sleep against the documented 42 us, caught by `adc_test`'s assertion
+      on that number.  The divider is now written before every conversion, and
+      `combo_test` asserts the time before and after a sleep.  Case study 14.
+- [x] Module selection still links and runs after all of this: five build
+      combinations (all, without UART, without PWR, GPIO+I2C+SPI only, GPIO only)
+      compile, and the GPIO-only build flashes and reports the mask `0x41`.  The
+      first pass of that check found a real regression: the EXTI hook added for
+      the power module's button referenced `pwr_button_edge` unconditionally, so
+      every build without PWR failed to link.
 ## Device identity from the chip
 
 - [x] The ESIG unique id (chapter 15 of the reference manual) is exposed:
@@ -238,10 +293,11 @@ Legend: `[x]` done, `[ ]` open, `[~]` in progress, `[!]` blocked.
       `i2c.md` (wiring, clock calibration, memory devices, completion tags),
       `adc.md` (10 bit not 12, measured readings, conversion time, the pin
       table gap), `uart.md` (the remap that works here, PD1 being SWIO, ring
-      sizing, the measured loopback), `kernel.md` (MFD structure, transports,
-      the child drivers and the UART TTY), `debugging.md` (tooling, twelve case
-      studies, test
-      harness traps).
+      sizing, the measured loopback), `pwr.md` (what standby keeps, the AWU
+      backstop, the measured LSI and the four approaches that did not work),
+      `kernel.md` (MFD structure, transports,
+      the child drivers and the UART TTY), `debugging.md` (tooling, fourteen case
+      studies, test harness traps).
 - [ ] Notes will rot if they are not used: when a measurement or a decision
       changes, the note that describes it has to change in the same turn.
 

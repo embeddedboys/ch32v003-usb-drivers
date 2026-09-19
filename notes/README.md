@@ -24,6 +24,7 @@ separate on purpose:
 | [i2c.md](i2c.md)                         | bit banged I2C: wiring, clock calibration, memory devices, result tags    |
 | [adc.md](adc.md)                         | ADC1: 10 bit and not 12, measured readings, conversion time, the pin table gap |
 | [uart.md](uart.md)                       | USART1: the remap that works here, PD1 being SWIO, ring sizing, the measured loopback |
+| [pwr.md](pwr.md)                         | sleep and standby: what the hardware keeps, the AWU backstop, the measured LSI, and the four things that did not work |
 | [kernel.md](kernel.md)                   | the Linux side: MFD core, transports, the GPIO/I2C/SPI/PWM/WDT/ADC children and the UART TTY |
 | [debugging.md](debugging.md)             | tooling, case studies of every bug found, and test harness traps          |
 

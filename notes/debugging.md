@@ -282,6 +282,51 @@ firmware did under driver control, in that order of likelihood.  Written down
 because "the board cannot be flashed and does not enumerate" is exactly the state
 that costs an hour when it is not in the notes.
 
+### 13. The ADC silently disarmed the SPI chip select
+
+Found by asking the question "do all the modules work together?" rather than by a
+failing test: everything passed, because the failure was invisible to every
+existing check.
+
+The ADC module's first version configured PC4 as an analog input when it came up.
+PC4 is also this board's SPI chip select, and the SPI module drives that select by
+writing the output data register only - so once the pad was an analog input the
+select stopped moving, while the SPI clock and data kept going out.  `spi_test`
+checks the data, so it passed.  Measured with the GPIO module's direction query:
+PC4 reported itself as an output after `SPI_SET_CS` and as an input after one
+conversion of the *internal* reference (which nobody would expect to touch a pin).
+
+The first fix - configure the pad only for the channel being converted - made it
+worse in a different place: ADC channel 1 is PA1, which is PWM channel 2, so
+converting it killed the PWM output and `pwm_test` and `adc_test` failed at once.
+The lesson is not "configure later" but **do not take a pad away from whatever is
+driving it**: the module now configures no pin at all and simply reads the pad,
+and the modules that do drive pins re-assert their mode when it matters
+(`pwm_apply()` does).
+
+*Check that would have caught it*: `scripts/combo_test.py` now sets the SPI chip
+select, converts the ADC and asserts the pin is still an output - in that order,
+because the order is what exposes it.
+
+### 14. A standby wake reset the ADC's clock, and the module reported the old one
+
+`pwr_test` and `combo_test` were both green; `adc_test` failed with "a conversion
+takes about 42 us: 11".  On a fresh boot it measured 42 us, and after any sleep it
+measured 11 - and the conversion time is the module's own read back of the ADC
+clock.
+
+Cause: the standby wake path calls `SystemInit()` to get back to 48 MHz, and
+`SystemInit()` rewrites `RCC->CFGR0`, which cleared ADCPRE back to its reset value.
+The ADC clock went from the documented HBCLK/8 (6 MHz) to HBCLK/2 (24 MHz), so
+conversions were genuinely four times shorter, while `notes/adc.md` and the
+module's own comments still said 42 us.  Readings stayed correct (24 MHz is inside
+the 24 MHz the manual allows), which is exactly why only the *time* gave it away.
+
+*Fix*: the ADCPRE field is written before every conversion, the same
+re-assert-what-you-depend-on rule as the PWM pins.  *Check*: `combo_test` asserts
+the documented conversion time both before and after a sleep, which is what makes
+this a regression test rather than a one-off diagnosis.
+
 ## Traps worth remembering
 
 - **A passing test can pass for the wrong reason.** Verify the cause: byte

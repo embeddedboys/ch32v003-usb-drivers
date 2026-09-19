@@ -97,6 +97,41 @@ while scanning them for a driven pin, channels 5, 6 and 7 all read full scale
 in `vendor/vendor.h`) and is a reminder that "an unconnected channel" is not a
 thing on this package.
 
+## Pins: this module configures none
+
+The converter reads a pad whatever mode it is in - driven pins read their driven
+level, floating ones read whatever they float to - so a host that wants the
+datasheet's analog mode sets it through the GPIO module, where it is visible and
+reversible.  The module only ever touches its own registers.
+
+That is the third design, and the first two were measured to be wrong:
+
+- **One-time setup** (the original): the first conversion put PC4 into analog
+  mode.  PC4 is also this board's SPI chip select, and the SPI module only writes
+  the output data register for it, so the select stopped moving **silently** while
+  the clocking carried on - `spi_test` passed, because it checks data.  Measured:
+  PC4 reported itself as an output after `SPI_SET_CS` and as an input after a
+  single conversion of the internal reference.
+- **Per channel**: converting channel 1 configured PA1 as an analog input, and
+  PA1 is PWM channel 2, so the PWM output died mid-test (`pwm_test` and `adc_test`
+  failed immediately).  Taking a pad away from whatever drives it is the bug, not
+  the configuration timing.
+
+The counterpart lesson for the modules that *do* drive pins: re-assert the mode
+when it matters (`pwm_apply()` does, so a channel keeps driving after something
+else has touched the pin).
+
+## The ADC clock is re-asserted per conversion
+
+`RCC->CFGR0`'s ADCPRE field is written before every conversion, not once at setup:
+the power module's standby wake calls `SystemInit()`, which rewrites `CFGR0` and
+leaves ADCPRE at its reset value (HBCLK/2 = 24 MHz instead of the /8 = 6 MHz this
+module documents).  Measured: 42 us on a fresh boot, **11 us after a sleep** -
+correct readings either way, since 24 MHz is legal, but the conversion time the
+module reports would have been a lie and the 42 us in this file wrong.  The
+check that caught it is `adc_test`'s assertion on that number, plus the same
+assertion in `scripts/combo_test.py` after a sleep.
+
 ## Protocol
 
 | command | direction | argument / result |
