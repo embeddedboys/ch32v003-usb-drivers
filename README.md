@@ -16,6 +16,68 @@ This project is based on [rv003usb](https://github.com/cnlohr/rv003usb).
 The following content assumes you are using the embeddedboys CH32V003 USB Dev
 Board together with a WCH-LinkE programmer.
 
+## Pin allocation
+
+What the firmware puts on which pin, in the default build (every module).  The
+flat number is the one the GPIO module asks for: `port * 16 + pin`, so `PD2` is 50
+and `PC0` is 32.  Pins 16..31 are reserved because there is no port behind them.
+
+| Pin | Port | Used by | Notes |
+| --- | ---- | ------- | ----- |
+| 1   | PA1  | PWM channel 2, **ADC channel 1** | one pad, two modules: the ADC reads it without taking it from the timer |
+| 2   | PA2  | free | a plain GPIO |
+| 32  | PC0  | free (the board's LED) | |
+| 33  | PC1  | I2C SDA | the AT24C256 sits on this bus |
+| 34  | PC2  | I2C SCL | |
+| 35  | PC3  | free | a plain GPIO |
+| 36  | PC4  | **SPI chip select, ADC channel 2** | the kernel SPI driver drives it as `reserved=36`; the ADC only reads it |
+| 37  | PC5  | SPI SCK | |
+| 38  | PC6  | SPI MOSI | jumper to PC7 for the loopback test |
+| 39  | PC7  | SPI MISO | |
+| 48  | PD0  | UART TX | jumper to PD1 for the UART tests |
+| 49  | PD1  | UART RX, **and SWIO** | the programmer owns this pin: see below |
+| 50  | PD2  | PWM channel 1 | |
+| 51  | PD3  | USB D+ | |
+| 52  | PD4  | USB D- | |
+| 53  | PD5  | USB pull-up (DPU) | the power module releases it for a standby sleep, which is what makes the host see a disconnect |
+| 54  | PD6  | boot button | also the power module's wake source, on a falling edge |
+| -   | PA0, PA3..PA15 | not connected | this package does not have them; a GPIO write reads back 0 |
+
+The device reports this list itself: `GET_CAPABILITIES` (0x3d) carries a 64 bit
+mask of the pins it owns, so a driver does not have to hardcode the table above.
+Anything the *driver* owns (a chip select, an IRQ line) is added on the kernel
+side with `reserved=<pin>[,<pin>]` on `usb-mfd.ko`.
+
+### Things to know before wiring anything up
+
+- **PD1 is the debug pin.**  It is the chip's SWIO line, the WCH-LinkE holds it,
+  and it cannot be used as an input while the programmer is attached.  That is why
+  the UART tests need a jumper between PD0 and PD1 - and why **that jumper
+  conflicts with flashing**: while the UART is enabled, PD0 drives an idle high
+  line through the jumper and holds SWIO, so `minichlink` fails
+  (`nothing connected to linker`).  Disabling the port releases both pins, and a
+  reset always works: `scripts/wdg_test.py --reset 400` or a power cycle.
+- **Two pads are shared.**  PC4 is the SPI chip select and the ADC's channel 2;
+  PA1 is PWM channel 2 and the ADC's channel 1.  The ADC configures no pin at all
+  and simply reads the pad, so it never takes one from the module driving it - and
+  the module that drives a pin re-asserts its mode (`pwm_apply()` does, so reading
+  a pin's level through the GPIO module does not leave the channel silent).
+- **The GPIO module has no "analog" mode.**  It offers a pull-up/pull-down input
+  and a push-pull output, which is what a GPIO is asked for; it cannot select the
+  chip's analog input mode, so an ADC channel reads its pad in whatever mode it is
+  in - a driven pad reads its driven level, a floating one reads what it floats
+  to, and both are what the internal reference and calibration channels are there
+  to sanity check against.  (`reserved=<pin>` on the core is the opposite thing:
+  it tells the kernel a pin belongs to a *driver*, so userspace cannot take it.)
+- **The jumpers the tests need**: PC6<->PC7 for `spi_test.py --loopback`,
+  PD0<->PD1 for `uart_test.py` and `tests/uart_tty_test.py`.  Everything else runs
+  without any wiring (the ADC's internal reference and calibration voltage, the
+  I2C EEPROM, the GPIO and PWM pins).
+- **Nothing sleeps unless a host asks**, and a standby sleep also switches the
+  debug interface off - the auto-wake timer is what brings the device back, which
+  is why there is no way to arm a sleep without one.  See
+  [notes/pwr.md](notes/pwr.md).
+
 ## Repository layout
 
 | Path          | Contents                                                                  |
@@ -23,13 +85,33 @@ Board together with a WCH-LinkE programmer.
 | `AGENTS.md`   | Rules for changing this repository (read before editing)                   |
 | `notes/`      | Knowledge base: measured limits, protocol details, debugging case studies  |
 | `hardware-docs/` | CH32V003 reference manual (`CH32V003RM.PDF`) and the WCH EVT package (`CH32V003EVT.ZIP`), both tracked; the bench device datasheets are not |
-| `vendor/`     | Main firmware: vendor specific USB device, GPIO, I2C and SPI modules       |
+| `patches/`    | Patches for the vendored submodule (`ch32fun`), kept as diffs              |
+| `vendor/`     | Main firmware: the USB device and nine modules (gpio, spi, i2c, wdg, pwm, adc, uart, pwr, frame) |
 | `bootloader/` | Upstream USB HID bootloader (VID 1209, PID B003)                           |
 | `rv003usb/`   | Vendored software USB stack (bit-banged low speed device)                  |
 | `lib/`        | USB descriptor / type definitions, and the shared VID/PID (`v003_usb_ids.h`) |
-| `kernel/`     | Linux driver: `usb-mfd.ko` (core) + `v003-gpio/i2c/spi/pwm/wdt.ko` (children) |
-| `scripts/`    | pyusb host side protocol tests and helpers                                 |
-| `tests/`      | Userspace uAPI tests (GPIO character device, i2c-dev, IIO) and the rusb experiment |
+| `kernel/`     | Linux driver: `usb-mfd.ko` (core) + `v003-gpio/i2c/spi/pwm/wdt/adc/uart.ko` (children) |
+| `scripts/`    | pyusb host side protocol tests and helpers (one per module, plus a combined one) |
+| `tests/`      | Userspace uAPI tests (GPIO character device, i2c-dev, IIO, TTY) and the rusb experiment |
+| `tools/`      | Bench instruments: state dashboard, pin probe, jumper check, SWIO recovery, build / module / whole-suite runners (see [tools/README.md](tools/README.md)) |
+
+### What the device offers
+
+One CH32V003, one USB link, and nine modules that are compiled in and reported by
+the device itself (`GET_CAPABILITIES`, 0x3d) - a host asks what is there instead
+of assuming:
+
+| Module | Host interface | Command range | Written up in |
+| ------ | -------------- | ------------- | ------------- |
+| gpio   | `gpiochip` with 56 lines | 0x06-0x0c | [notes/firmware.md](notes/firmware.md) |
+| i2c    | `i2c_adapter` (bit banged) | 0x50-0x5f | [notes/i2c.md](notes/i2c.md) |
+| spi    | `spi_controller` (hardware SPI1) | 0x40-0x47 | [notes/firmware.md](notes/firmware.md) |
+| pwm    | `pwm_chip`, two TIM1 channels | 0x70-0x72 | [notes/firmware.md](notes/firmware.md) |
+| wdt    | `watchdog_device` (the chip's IWDG) | 0x60-0x63 | [notes/firmware.md](notes/firmware.md) |
+| adc    | IIO device, ten 10 bit channels | 0x80-0x85 | [notes/adc.md](notes/adc.md) |
+| uart   | TTY at `/dev/ttyV0` | 0x90-0x9a | [notes/uart.md](notes/uart.md) |
+| pwr    | protocol only (nothing standard fits) | 0xa0-0xa2 | [notes/pwr.md](notes/pwr.md) |
+| frame  | the endpoint data path itself | - | [notes/frame-protocol.md](notes/frame-protocol.md) |
 
 Three documents answer three different questions: this README how to build and
 run, [TODO.md](TODO.md) what is done and what was verified on hardware, and
@@ -43,25 +125,97 @@ and for how to register the id and get it into the upstream database.
 
 ## Getting Started
 
+### 0. What you need
+
+**Hardware.**  Two cables, and they do different things:
+
+- the board's **own USB port to the PC** - that is the device under test, the one
+  this driver binds to (the board's USB pins are PD3/PD4 and its pull-up control
+  is PD5, see the [pin allocation](#pin-allocation));
+- the **WCH-LinkE to the board's programming pins**: `SWIO` (that is PD1), `3V3`
+  and `GND`.  This one is only for flashing and for the `minichlink -T` log, and
+  both grounds meet through the PC.
+
+Only the tests that say so need wiring beyond that: **PC6<->PC7** for the SPI
+loopback and **PD0<->PD1** for the UART loopback (that one shares the debug pin -
+read [Things to know before wiring anything up](#things-to-know-before-wiring-anything-up)
+before using it while flashing).  An AT24C256 on the I2C pins (PC1/PC2) is what
+the I2C and EEPROM tests talk to; the rest runs without any external parts (the
+ADC checks itself against its own internal reference and calibration channels, and
+the GPIO test uses PC0, the board's LED).
+
+**Software.**
+
+```shell
+git clone <this repository> && cd ch32v003-usb-drivers
+git submodule update --init ch32fun     # build rules, minichlink, rv003usb's home
+
+# 1. a bare metal RISC-V toolchain (the build finds either prefix)
+sudo pacman -S riscv64-unknown-elf-gcc          # Arch / CachyOS
+sudo apt install gcc-riscv64-unknown-elf        # Debian / Ubuntu
+# xPack works too, and then it has to be on PATH:
+#   export PATH=$HOME/.local/opt/xpack-riscv-none-elf-gcc-*/bin:$PATH
+
+# 2. build tools for the programmer, and for the kernel modules
+sudo pacman -S base-devel python libusb clang lld llvm linux-headers  # Arch / CachyOS
+sudo apt install build-essential python3 python3-venv libusb-1.0-0-dev \
+                 clang lld linux-headers-$(uname -r)              # Debian / Ubuntu
+
+# 3. the host side tests: a virtualenv with pyusb, nothing else
+python3 -m venv .venv && .venv/bin/pip install pyusb
+```
+
+The kernel module build takes its headers from
+`/lib/modules/$(uname -r)/build` (see `kernel/Makefile` if your kernel tree lives
+somewhere else) and passes `LLVM=1` by itself on a clang built kernel, which is
+why `clang`/`lld` are in the list.
+
+**Permissions.**  Nothing needs root except `insmod` and the rules below: three
+device nodes want a udev rule or a group, so install the ones you need and re-plug
+the device.
+
+```shell
+# the WCH-LinkE itself (this file ships with the submodule)
+sudo cp ch32fun/minichlink/99-minichlink.rules /etc/udev/rules.d/
+
+# /dev/i2c-N for the I2C tests
+echo 'SUBSYSTEM=="i2c-dev", GROUP="plugdev", MODE="0660"' | sudo tee /etc/udev/rules.d/60-i2c-dev-plugdev.rules
+
+# /dev/ttyV0 for the TTY test
+echo 'SUBSYSTEM=="tty", KERNEL=="ttyV*", GROUP="plugdev", MODE="0660"' | sudo tee /etc/udev/rules.d/61-tty-v003-plugdev.rules
+
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
+
+`/dev/gpiochipN` is already in `plugdev`, so the GPIO tests only need your user to
+be in that group (`groups | grep plugdev`).  The pyusb tests need the *kernel
+modules unloaded* - the interface cannot be claimed twice - so the two test suites
+are run one after the other, never at the same time.
+
+**Then check it all works** (three commands, and what they should say):
+
+```shell
+make -C ch32fun/minichlink               # builds the programmer and the flasher
+make -C vendor                           # builds the firmware, then flashes it
+.venv/bin/python scripts/v003_test.py    # "ALL TESTS PASSED"
+```
+
+Flashing reboots the chip, so give the device a second to re-enumerate before the
+test - `FAIL: device not found` right after a build is usually just that.
+
+If `make` cannot talk to the chip, that is almost always SWIO: see
+[Things to know before wiring anything up](#things-to-know-before-wiring-anything-up)
+- a held PD1 (the UART's receive pin is that same debug pin, and a jumper to PD0
+holds it) makes minichlink report `nothing connected to linker`.
+
 ### 1. Toolchain
 
 A bare metal RISC-V GCC is required; the build detects `riscv64-unknown-elf-gcc`
 or `riscv-none-elf-gcc` automatically and can be overridden with
-`make PREFIX=...`.
+`make PREFIX=...`.  Built and verified with xPack GCC 15.2.0-1 here.
 
-```shell
-# Arch / CachyOS
-sudo pacman -S riscv64-unknown-elf-gcc
-# Debian / Ubuntu
-sudo apt install gcc-riscv64-unknown-elf
-```
-
-`minichlink` also needs libusb headers (`libusb-1.0` / `libusb-1.0-0-dev`).
-The `ch32fun` submodule holds both the build rules and `minichlink`:
-
-```shell
-git submodule update --init ch32fun
-```
+`minichlink` needs libusb headers (`libusb-1.0` / `libusb-1.0-0-dev`), and the
+`ch32fun` submodule holds both the build rules and `minichlink` itself.
 
 ### 2. Build the firmware
 
@@ -91,6 +245,13 @@ make build           # produce vendor.bin / vendor.elf
 
 `make` also builds and flashes in one step (see below).
 
+`tools/build.sh` does the same and then reports the two budgets this chip runs
+into: `vendor.bin` against the 16 kB of flash, and `_ebss` against the 0x20000800
+stack top.  The stack grows *down* into the statics, so an overrun corrupts
+variables instead of faulting - the number to watch is the one `GET_STACK_FREE`
+(0x3b, via `tools/status.py`) measures on hardware, not the optimistic fresh-boot
+value.
+
 ### 3. Build the programmer and flash
 
 ```shell
@@ -108,9 +269,11 @@ The driver follows `drivers/mfd/dln2.c`: `usb-mfd.ko` is only the USB transport
 and MFD core (it exports `v003_transfer_out()` / `v003_transfer_in()` and the
 transport aware `v003_cmd_out()` / `v003_cmd_in()` and registers the MFD cells),
 and every function of the device is a child platform driver: `v003-gpio.ko`
-(gpiochip), `v003-i2c.ko` (`i2c_adapter`) and `v003-spi.ko`
-(`spi_controller`).  The child modules
-use symbols exported by the core, so they have to be loaded in that order.
+(gpiochip), `v003-i2c.ko` (`i2c_adapter`), `v003-spi.ko` (`spi_controller`),
+`v003-pwm.ko` (`pwm_chip`), `v003-wdt.ko` (`watchdog_device`), `v003-adc.ko` (an
+IIO device) and `v003-uart.ko` (a TTY).  The child modules use symbols exported by
+the core, so they have to be loaded after it; a module the firmware was not built
+with gets no cell and its driver simply has nothing to probe.
 
 ```shell
 cd kernel
@@ -181,21 +344,11 @@ sudo insmod v003-i2c.ko selftest=0x50 selftest_len=16    # ... 16 bytes
 sudo insmod v003-i2c.ko half_period=25                   # ~140 kHz instead of ~280 kHz
 ```
 
-`/dev/ttyV0` is created `root:uucp` with mode 0660, so one more rule is needed
-for the TTY test to run without root:
+Two of the userspace tests need a udev rule before they run as an ordinary user -
+`/dev/i2c-N` is `root:i2c` and `/dev/ttyV0` is `root:uucp` - and both rules are in
+[step 0](#0-what-you-need) above.
 
 ```shell
-echo 'SUBSYSTEM=="tty", KERNEL=="ttyV*", GROUP="plugdev", MODE="0660"' | sudo tee /etc/udev/rules.d/61-tty-v003-plugdev.rules
-sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=tty
-```
-
-`/dev/i2c-N` is owned by `root:i2c`.  One udev rule hands it to `plugdev`
-(which developers are already in for `/dev/gpiochipN`):
-
-```shell
-echo 'SUBSYSTEM=="i2c-dev", GROUP="plugdev", MODE="0660"' | sudo tee /etc/udev/rules.d/60-i2c-dev-plugdev.rules
-sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=i2c-dev
-
 .venv/bin/python tests/i2c_dev_test.py        # through the kernel I2C stack
 ```
 
@@ -234,23 +387,41 @@ payload commands belong long term.
 ```shell
 python3 -m venv .venv && .venv/bin/pip install pyusb
 
-.venv/bin/python scripts/v003_test.py   # generic module, EP data path, GPIO
+# protocol tests: one per module, over raw USB (the kernel modules must be
+# unloaded: the interface cannot be claimed twice)
+.venv/bin/python scripts/v003_test.py    # commands, EP data path, GPIO, capabilities
+.venv/bin/python scripts/i2c_test.py     # I2C over the AT24C256
+.venv/bin/python scripts/eeprom_test.py  # page writes and reads
 .venv/bin/python scripts/spi_test.py    # SPI bridge
 .venv/bin/python scripts/spi_test.py --loopback --soak 150   # with PC6<->PC7 jumper
 .venv/bin/python scripts/adc_test.py     # ADC: internal reference and calibration voltage
+.venv/bin/python scripts/pwm_test.py     # PWM: reported period and both duty extremes
 .venv/bin/python scripts/uart_test.py    # UART: needs a jumper between PD0 and PD1
+.venv/bin/python scripts/frame_test.py   # framed endpoint protocol
+.venv/bin/python scripts/wdg_test.py --reset 2000   # let the watchdog bite
 .venv/bin/python scripts/pwr_test.py     # sleep, standby and the wake reasons
-.venv/bin/python scripts/combo_test.py   # every module in one session, before and after a sleep
 .venv/bin/python scripts/pwr_test.py --wdg --uart   # the watchdog refusal, UART wake
+.venv/bin/python scripts/combo_test.py   # every module in one session, before and after a sleep
+.venv/bin/python scripts/stress_test.py --mode mixed --iterations 300
 
-# kernel side (the modules have to be loaded, and the pyusb scripts above need
-# them unloaded - the interface cannot be claimed twice)
+# uAPI tests: the kernel modules have to be loaded for these
 .venv/bin/python tests/gpio_chardev.py   # GPIO character device
+.venv/bin/python tests/i2c_dev_test.py   # i2c-dev, the adapter and its SMBus set
 .venv/bin/python tests/adc_iio_test.py   # ADC through IIO: /sys/bus/iio/devices
 .venv/bin/python tests/uart_tty_test.py  # UART through /dev/ttyV0 (PD0<->PD1 jumper)
-.venv/bin/python scripts/pwm_test.py     # PWM: reported period and both duty extremes
-.venv/bin/python scripts/stress_test.py --mode mixed --iterations 300
 ```
+
+`tools/run_tests.sh` runs all of it in the order it has to run in (the driver
+side with the modules loaded, the protocol side with them unloaded), prints one
+pass/fail table, keeps every log and fails the run when dmesg has warnings in it;
+[tools/README.md](tools/README.md) describes the instruments next to it.
+
+`scripts/i2c_trace.py` decodes the firmware's I2C clock trace and needs a firmware
+built with `make TRACE=1`: the tracer costs 136 bytes of RAM and 224 of flash, so
+it is off by default and the script skips with that explanation when it is not
+there.  `tests/gpio_sysfs.py` blinks a line through the *legacy* sysfs GPIO
+interface, which current kernels no longer compile in (this bench has
+`CONFIG_GPIO_CDEV` only), and it skips for the same kind of reason.
 
 `spi_test.py --loopback` requires a jumper between PC6 (MOSI) and PC7 (MISO);
 with it, 150 random transfers over each of the two SPI paths pass with zero
@@ -284,12 +455,22 @@ what brings it back, which is why there is no way to arm a sleep without one.
 **The jumper and flashing do not get along**: while the UART is enabled, PD0 is
 an output driving an idle high line and through the jumper it holds SWIO, so
 `minichlink` fails (`nothing connected to linker`, or `HARTINFO: ffffffff /
-Could not setup interface` after host side pin experiments). Disabling the port
-makes the module release both pins, but that is not always enough - what is
-reliable is a **reset**: `scripts/wdg_test.py --reset 400` arms the watchdog over
-USB and lets it bite, and the watchdog is in the default build. Removing the
-jumper works too. `uart_test.py` disables the port in a `finally:` so a failing
-run does not make things worse.
+Could not setup interface` after host side pin experiments).  Disabling the port
+makes the module release both pins, and `tools/free_swio.py` does exactly that
+over USB and then reads the pad mode back to prove it:
+
+```shell
+# measured: with the port enabled        -> link error, nothing connected to linker
+#            after tools/free_swio.py     -> the same make reports "Image written."
+.venv/bin/python tools/free_swio.py
+make -C vendor
+```
+
+If that is still not enough, what always works is a **reset**:
+`scripts/wdg_test.py --reset 400` arms the watchdog over USB and lets it bite, and
+the watchdog is in the default build. Removing the jumper works too.
+`uart_test.py` disables the port in a `finally:` so a failing run does not make
+things worse.
 
 ### 6. Debugging with GDB
 
@@ -543,19 +724,39 @@ Both were found the hard way and constrain everything the firmware can do:
   reports the transfer as EIO.  This is why control-OUT data stages, frames and
   the I2C bit banging all run from the main loop.  `V003_GET_TIMING` (0x3f) with
   `wValue` = loop iterations re-measures the budget on any build.
-- **~790 bytes of stack.**  The stack starts at 0x20000800 and grows down into
-  the statics, so an oversized buffer does not fault, it silently corrupts
-  whatever sits at the end of `.bss`.  `V003_GET_STACK_FREE` (0x3b) reports what
-  is left (measured by painting the free RAM at boot and scanning it from the
-  main loop - the scan takes ~150 us, 30x the interrupt budget, so it must never
-  run in the interrupt).  After shrinking the rv003usb UEvent ring
-  (`RV003USB_NUMUEVENTS`, 8 instead of 32: 512 bytes of RAM for a debug channel)
-  and the endpoint buffers, `.bss` ends at 0x200004f4 and at most 272 of the 780
-  bytes are used (the deepest consumer used to be the debug printf path).  Printing the UEvent ring (`make DEBUG_EVENTS=1`) is off by
-  default because the bit-banged output blocks the main loop, which then stops
-  servicing the requests it owes the host.
+- **The stack has ~450 bytes of room, not 790.**  It starts at 0x20000800 and
+  grows down into the statics, so an oversized buffer does not fault, it silently
+  corrupts whatever sits at the end of `.bss` (now 0x20000504).  `V003_GET_STACK_FREE`
+  (0x3b) reports what is left, by painting the free RAM at boot and scanning it
+  from the main loop - the scan takes ~150 us, 30x the interrupt budget, so it must
+  never run in the interrupt.  Note that it reports the *deepest* use the canary has
+  seen, so a fresh boot is optimistic: measured 352 bytes right after a reset and
+  **448 bytes once `scripts/combo_test.py` has exercised every module**, which is
+  the number to plan against.  The debug facilities are what paid for the modules:
+  the rv003usb UEvent ring is at `RV003USB_NUMUEVENTS` 2 (`make UEVENTS=4`), the
+  I2C clock tracer is off (`make TRACE=1`), and printing the ring at all needs
+  `make DEBUG_EVENTS=1` because the bit-banged output blocks the main loop, which
+  then stops servicing the requests it owes the host.
 
 ## Develop
+
+**The bench instruments live in [`tools/`](tools/README.md)**: `status.py` (one
+command that reports what the device is doing), `pin_probe.py` (what is on a pad,
+and which pin a button is on), `uart_jumper_check.py` (the jumper or the
+firmware), `free_swio.py` (give the debug pin back to the programmer),
+`build.sh` (build, flash, and where flash and RAM stand), `modules.sh` (load or
+unload the kernel drivers in the order that works) and `run_tests.sh`.
+
+`tools/run_tests.sh` runs both halves of the suite in the order they require -
+the driver side with the modules loaded, the protocol side with them unloaded -
+prints one pass/fail table, keeps every log, and fails the run when dmesg has
+warnings in it:
+
+```shell
+tools/run_tests.sh            # 16 passed, 1 skipped, 0 failed on this bench
+tools/run_tests.sh --flash    # build, flash, then test what was just flashed
+tools/run_tests.sh --repeat 3 # the flake check
+```
 
 generate compile_commands.json and use clangd to index code
 

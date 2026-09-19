@@ -184,5 +184,11 @@ matters: two host paths, one protocol.  Loading needs `industrialio` first
 
 ## Open
 
+- There is no way to put a channel's pin into the chip's analog input mode from a
+  host: the GPIO module offers pull-up/pull-down input and push-pull output, and
+  the ADC deliberately configures nothing.  A command that sets a pin's mode to
+  analog (or an `ADC_START` variant that does it for the channel's pad) would be
+  the way to do it, and it would want to undo it again afterwards - see the two
+  failures in the "Pins" section above before adding one.
 - The full channel to pin table, which needs the CH32V003 datasheet (only the
   reference manual and the EVT package are in `hardware-docs/`).
