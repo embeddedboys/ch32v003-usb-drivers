@@ -11,6 +11,7 @@ separate on purpose:
 | `README.md`     | how do I build, flash, load and run this?                          |
 | `TODO.md`       | what is done, what is open, what was verified on hardware           |
 | `notes/` (here) | *why* - measured limits, protocol details and debugging case studies |
+| `tools/`        | the bench instruments those measurements came from, one per failure mode |
 | `AGENTS.md`     | the rules to follow when changing anything in this repository       |
 
 ## Index
@@ -46,6 +47,9 @@ separate on purpose:
   bizarre way.
 - Before touching a driver, read [kernel.md](kernel.md); before writing a test,
   read the traps section of [debugging.md](debugging.md).
+- When a measurement here needs reproducing, [`../tools/`](../tools/README.md)
+  holds the instrument for it: the state dashboard, the pin probe, the UART
+  jumper check, the SWIO recovery, the build / module / whole-suite runners.
 - When a new hardware measurement contradicts something written here, fix the
   note. Numbers in these files are measured, not estimated, and every one of
   them should be reproducible with the commands next to it.

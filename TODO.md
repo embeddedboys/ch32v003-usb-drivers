@@ -692,13 +692,44 @@ Legend: `[x]` done, `[ ]` open, `[~]` in progress, `[!]` blocked.
       Until then SPI is only verified one direction at a time: MOSI/SCK/CS by
       the clocked byte count and pin levels, MISO by driving PC7 from the GPIO
       module.
-- [ ] `tests/gpio_sysfs.py` uses the deprecated sysfs GPIO ABI and hardcodes
+- [x] `tests/gpio_sysfs.py` uses the deprecated sysfs GPIO ABI and hardcodes
       line 32; `/sys/class/gpio` does not even exist on a kernel without
       `CONFIG_GPIO_SYSFS`. Move to the GPIO character device / libgpiod.
+      (`tests/gpio_chardev.py` is the character device test; the sysfs one now
+      takes the line as an argument and `tools/run_tests.sh` passes 32, so it
+      prints `SKIP: /sys/class/gpio is not there` and the suite counts it as a
+      skip instead of a failure.)
 - [ ] `tests/gpio` (Rust + rusb) discards all transfer results (`_ = ...`) and
       has no CLI or assertions.
 - [ ] `scripts/ctrl_transfer.py` is a scratch file with unused variables.
-- [ ] No CI and no `make test` entry point for the userspace suites.
+- [x] **`tools/run_tests.sh`: one entry point for both suites.**  No CI, but this
+      is the command a commit is checked with.  It runs the driver side with the
+      modules loaded and the protocol side with them unloaded (the order is a
+      constraint - wrong way round and pyusb reports `Resource busy`), prints one
+      pass/fail table, keeps every log under `/tmp/v003-tests`, restores the
+      module state it found, and **fails the run when dmesg has warnings in the
+      lines the run itself produced**: the `list_add corruption` that followed
+      the TTY driver freeing an embedded `tty_port` passed every test and was
+      visible only there.  Measured: `tools/run_tests.sh` -> 16 passed, 1 skipped
+      (`gpio_sysfs`, this kernel has no `CONFIG_GPIO_SYSFS`), 0 failed, dmesg
+      clean; `--repeat 2 --pyusb-only` -> 22 passed; `--flash --pyusb-only` ->
+      built 12556 B flash / 1284 B RAM, flashed, 11/11 protocol tests passed on
+      the fresh image.
+- [x] **`tools/` added: the instruments this session kept retyping**, one per
+      failure mode - `status.py` (dashboard: capabilities, reserved pins, stack
+      margin read twice because `GET_STACK_FREE` answers with the *cached* value
+      and arms a refresh, ADC conversion time, PWR/WDG state, endpoint and drop
+      counters), `pin_probe.py` (drives each free pad to both levels and reads it
+      back; `--watch` finds which pin a button is on, `--keep-mode` samples a pad
+      a module is driving without taking it away), `uart_jumper_check.py` (looks
+      at PD0/PD1 as plain GPIO first - without driving, since PD1 is SWIO - then
+      does one 733 baud loopback with the counter deltas that say who moved the
+      bytes), `free_swio.py`, `build.sh` and `modules.sh`.  `modules.sh` replaces
+      `make -C kernel test`, which appends `|| true` to every `insmod` and so
+      cannot report a child that did not load; it also decompresses
+      `industrialio.ko.zst` to /tmp for the ADC child, because `insmod` cannot
+      read a compressed module and `modprobe` is not in the passwordless sudo
+      set.  Written up in [tools/README.md](tools/README.md).
 
 ## Debugging (WCH-Link + GDB)
 
@@ -739,6 +770,32 @@ Legend: `[x]` done, `[ ]` open, `[~]` in progress, `[!]` blocked.
 
 _Updated after each real-hardware run (WCH-LinkE + CH32V003)._
 
+- [x] **`tools/free_swio.py` verified against the failure it exists for, both
+      halves.**  With the UART port enabled at 115200 and the PD0<->PD1 jumper in
+      place, `make -C vendor` fails exactly as documented: `link error, nothing
+      connected to linker (4 = [81 55 01 01])` x5, `marchid : ffffffff`,
+      `HARTINFO: ffffffff`, `Could not setup interface`, exit 2.  The tool then
+      read `PD0: OUTPUT - still driving` / `PD1: input`, asked the firmware to
+      disable the port, read back `PD0: input (high impedance)`, and the same
+      `make -C vendor` reported `Image written.` - with the jumper still in
+      place.  A fresh boot always has the port disabled.
+- [x] **`tools/pin_probe.py` measured the bench**: PA0 `stuck at 0` (not bonded,
+      as the pin table says), PA2/PC0/PC3/PC4/PA1/PC5..PC7/PD2 drive both levels
+      and follow the internal pull (nothing holds them), and PC1/PC2 read high
+      with both pulls - the AT24C256 pull-ups.  `--watch --pins 1 --keep-mode`
+      counted 80 edges of a 100 ms period PWM on PA1 in 4 s (40 periods, both
+      edges), which is the sampler proven on a signal another module was driving.
+- [x] **`tools/run_tests.sh`**: 16 passed, 1 skipped, 0 failed, dmesg clean;
+      `--repeat 2 --pyusb-only` 22 passed; `--flash --pyusb-only` built, flashed
+      and passed 11/11.
+- [x] `tools/modules.sh` load / unload / status verified, including the failure
+      paths: a second `load` reports "already loaded" instead of failing, a
+      `cat /dev/ttyV0` in the background makes `unload` refuse (first
+      `v003-uart is in use`, then `usb-mfd is in use`, exit 1, and it names the
+      leftover) - which is the state that later shows up as `Resource busy` in a
+      pyusb run.  `tools/build.sh` reports 12556/16384 bytes (76 %) flash and
+      `_ebss` 0x20000504 with 764 bytes left for the stack, and fails loudly with
+      no toolchain on PATH.
 - [x] Firmware builds from a clean checkout (FLASH 35.4 %, RAM 54.9 %).
 - [x] Firmware flashes over the WCH-LinkE, re-enumerates as `1209:c303`, and
       its `printf()` log is readable with `minichlink -T`.

@@ -94,6 +94,10 @@ These are hard limits, not preferences. Numbers and evidence:
 
 - `scripts/` = host side protocol tests over raw USB (pyusb), `tests/` = userspace
   uAPI tests (GPIO character device, i2c-dev). Put a new test where its peers are.
+- `tools/` = the bench instruments (state dashboard, pin probe, UART jumper check,
+  SWIO recovery, build / module / whole-suite runners). Look there before writing
+  another one-off debugging script, and run `tools/run_tests.sh` for both suites
+  in the order they require - it also fails the run when dmesg warns about it.
 - **Verify on hardware and report measured numbers**, with the command that
   produced them. "It compiles" and "the test passed" are not evidence that the
   feature works.
