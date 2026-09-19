@@ -44,7 +44,17 @@
  *                    one pin configured as an analog input here
  *
  * Other external channels are accepted and convert whatever their pin carries.
+ *
+ * **A channel's pin is configured as an analog input only when that channel is
+ * converted.**  Doing it once for all channels - which is what this module did
+ * first - meant that reading the internal reference also took PC4 away from the
+ * SPI module, and since the SPI module only writes the output data register for
+ * its chip select, the select stopped moving *silently* (measured: PC4 went from
+ * output to input on the first conversion, with the CS commands still accepted).
+ * The two known pins are also reported as reserved for that reason.
  */
+#define V003_ADC_PIN_CH1_CHANNEL 1 /* PA1, measured: the PWM channel 2 pin */
+#define V003_ADC_PIN_CH2_CHANNEL 2 /* PC4, from WCH's ADC example */
 
 #define V003_ADC_CHANNELS 10
 #define V003_ADC_BITS	  10

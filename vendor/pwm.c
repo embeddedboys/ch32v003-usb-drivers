@@ -93,6 +93,15 @@ static void pwm_apply(const struct v003_pwm_cfg *cfg)
 
 	pwm_hw_setup();
 
+	/* Re-assert the pin modes on every apply, not just on the first: the pins
+	 * are shared with whatever else a host does with them (the ADC's channel 1
+	 * is PA1, and reading a pin's level through the GPIO module puts it into
+	 * input mode), and without this a channel that was touched once would keep
+	 * counting but stop driving its pin - silently, because the timer's
+	 * registers are all still correct. */
+	funPinMode(V003_PWM_PIN_CH1, GPIO_Speed_10MHz | GPIO_CNF_OUT_PP_AF);
+	funPinMode(V003_PWM_PIN_CH2, GPIO_Speed_10MHz | GPIO_CNF_OUT_PP_AF);
+
 	/* a prescaler change only takes effect on an update event */
 	TIM1->PSC = presc;
 	TIM1->ATRLR = arr;

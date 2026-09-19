@@ -25,12 +25,29 @@ static volatile u8 adc_reqs;
 static volatile u8 adc_err;
 static volatile u16 adc_us;
 
-/* The external channels' pins come from the package table in the datasheet,
- * which this project does not have; WCH's own ADC example uses PC4 for ADC_IN2
- * and that is the one this file configures as analog.  A channel whose pin is
- * not configured as an analog input still converts - it just reads whatever
- * that pin carries. */
-#define ADC_PIN_CH2 PC4
+/* The external channels' pins come from the package table in the datasheet, which
+ * this project does not have: WCH's own ADC example uses PC4 for ADC_IN2, and
+ * ADC_IN1 is PA1 (measured, vendor/adc.h).
+ *
+ * **This module configures no pin at all.**  It did once: the first conversion
+ * put PC4 into analog mode, which took it away from the SPI module's chip select,
+ * and because the SPI module only writes the output data register for its select,
+ * the select stopped moving silently while the clocking carried on (measured: PC4
+ * reported itself as an output after `SPI_SET_SELECT`, and as an input after one
+ * conversion of the internal reference - a test that checks the data still
+ * passed).  Configuring it per channel instead was worse: converting channel 1
+ * turned PA1 into an analog input mid-test and killed the PWM output on the very
+ * same pad (`pwm_test` and `adc_test` failed immediately).
+ *
+ * So the rule is the caller's to decide: the converter reads the pad whatever
+ * mode it is in - a driven pin reads its driven level, a floating one reads
+ * whatever it floats to - and a host that wants the datasheet's analog mode sets
+ * it through the GPIO module, where it is visible and reversible.  A conversion
+ * only ever touches the ADC's own registers.
+ */
+#define ADC_PIN_CH2 PC4 /* channel 2, for the record: this module does not touch it */
+#define ADC_PIN_CH1 PA1 /* channel 1 */
+#define V003_ADC_PIN_CH2_PIN 36
 
 /* CTLR1 CALVOL[1:0]: 01 = 2/4 AVDD, 10 = 3/4 AVDD, anything else invalid
  * (RM 9.3).  Reset leaves it at 00, so it has to be written. */
@@ -65,6 +82,23 @@ static u8 adc_calibrate(void)
 	return 1;
 }
 
+/*
+ * ADCCLK = HBCLK / 8 = 6 MHz, well inside the 24 MHz the manual allows, and the
+ * conversion time the module reports is measured against this divider.
+ *
+ * It is written before *every* conversion, not once at setup, because the power
+ * module's standby wake calls `SystemInit()`, which rewrites RCC->CFGR0 and
+ * clears ADCPRE back to its reset value (HBCLK/2 = 24 MHz).  Measured: 42 us on a
+ * fresh boot and 11 us after a sleep - correct readings either way, since 24 MHz
+ * is legal, but the reported conversion time would be a lie and the number in
+ * adc.h would no longer describe the device.
+ */
+static void adc_clock_setup(void)
+{
+	RCC->CFGR0 &= ~RCC_ADCPRE;
+	RCC->CFGR0 |= RCC_ADCPRE_DIV8;
+}
+
 static void adc_hw_setup(void)
 {
 	if (adc_on)
@@ -72,16 +106,11 @@ static void adc_hw_setup(void)
 
 	RCC->APB2PCENR |= RCC_APB2Periph_ADC1 | RCC_APB2Periph_GPIOC;
 
-	/* ADCCLK = HBCLK / 8 = 6 MHz, well inside the 24 MHz the manual allows;
-	 * the conversion time below is measured against this divider */
-	RCC->CFGR0 &= ~RCC_ADCPRE;
-	RCC->CFGR0 |= RCC_ADCPRE_DIV8;
+	adc_clock_setup();
 
 	/* reset the peripheral so no register keeps a state from before */
 	RCC->APB2PRSTR |= RCC_APB2Periph_ADC1;
 	RCC->APB2PRSTR &= ~RCC_APB2Periph_ADC1;
-
-	funPinMode(ADC_PIN_CH2, GPIO_Speed_In | GPIO_CNF_IN_ANALOG);
 
 	/* software trigger for the regular group: EXTSEL = 111, the value
 	 * ch32fun's adc_polled example and WCH's ADC_ExternalTrigConv_None both
@@ -107,6 +136,7 @@ static u32 adc_convert(u8 channel)
 	u32 t0;
 
 	adc_hw_setup();
+	adc_clock_setup();
 
 	/* sample time 7 = 241 ADCCLK, the longest one, which is what a floating
 	 * internal channel needs: TCONV = 241 + 11 = 252 ADCCLK = 42 us at
