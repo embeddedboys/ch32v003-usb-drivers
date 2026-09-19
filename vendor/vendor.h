@@ -20,6 +20,13 @@
 #define V003_CMD_GET_ID(cmd)  (cmd >> 8)
 #define V003_CMD_GET_CMD(cmd) (cmd & 0xFF)
 
+/* Detach and re-attach the device on the bus.  The USB pull-up (PD5) is what
+ * tells the host a device is there, so a standby sleep releases it and gets a
+ * clean disconnect plus a fresh enumeration on the way back instead of a device
+ * that ignores everything (vendor/vendor.c, used by the power module). */
+extern void v003_usb_detach(void);
+extern void v003_usb_attach(void);
+
 /* ------------------------------------------------------------------ */
 /* which modules this build contains                                  */
 /*                                                                    */
@@ -58,11 +65,13 @@
 #ifndef V003_MODULE_WDG
 #define V003_MODULE_WDG 0
 #endif
-/* power management: sleep/standby entry, wakeup sources, and reporting why the
- * chip woke.  Small in RAM, but it interacts with the USB link (a sleeping
- * device stops answering) so it needs its own design pass. */
+/* power management: sleep and standby entry, wake sources and the wake reason.
+ * The one module that changes whether the device exists as far as the host is
+ * concerned (a sleeping core cannot run the bit banged USB), see vendor/pwr.h for
+ * the rules it follows - explicit requests only, an always-armed AWU backstop,
+ * and the USB pull-up released for a standby sleep. */
 #ifndef V003_MODULE_PWR
-#define V003_MODULE_PWR 0
+#define V003_MODULE_PWR 1
 #endif
 
 /* Depth of the ring the USB interrupt uses to hand zero length vendor OUT
@@ -156,9 +165,8 @@ struct v003_caps {
  * the same macro gates the implementation *and* the bit the device reports, so
  * enabling it silently would advertise a feature that does not exist.
  */
-#if V003_MODULE_PWR
-#error "pwr has no implementation yet (see TODO.md)"
-#endif
+/* every module named in vendor.h now has an implementation; the guard that used
+ * to refuse the reserved names is gone with the last one (uart, then pwr) */
 
 /* Module 0x00: device-wide / generic requests. */
 #define V003_GENERIC_MODULE_ID 0x00

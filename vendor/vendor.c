@@ -24,6 +24,9 @@
 #if V003_MODULE_UART
 #include "uart.h"
 #endif
+#if V003_MODULE_PWR
+#include "pwr.h"
+#endif
 #include "frame.h"
 
 #define V003_HW_ID	 0x200
@@ -545,6 +548,14 @@ static void usb_handle_control_in_request(struct usb_endpoint *e,
 		data = device_uid;
 		len = s->wLength < V003_DEVICE_UID_SIZE ? s->wLength
 						       : V003_DEVICE_UID_SIZE;
+#if V003_MODULE_PWR
+	} else if (s->wIndex == V003_PWR_GET_STATE) {
+		/* what the sleeps have done, and what a sleep would do now */
+		const struct v003_pwr_state *st = pwr_state_ptr();
+
+		data = (u8 *)st;
+		len = s->wLength > sizeof(*st) ? sizeof(*st) : s->wLength;
+#endif
 #if V003_MODULE_UART
 	} else if (s->wIndex == V003_UART_GET_CFG) {
 		/* the configuration as the device holds it, actual_baud included */
@@ -629,6 +640,11 @@ static void usb_handle_control_in_request(struct usb_endpoint *e,
 #if V003_MODULE_UART
 		case V003_UART_MODULE_ID:
 			val = handle_uart_in_request(s->wIndex, s->wValue);
+			break;
+#endif
+#if V003_MODULE_PWR
+		case V003_PWR_MODULE_ID:
+			val = handle_pwr_in_request(s->wIndex, s->wValue);
 			break;
 #endif
 		default:
@@ -755,6 +771,13 @@ static void usb_handle_control_out_data(struct usb_urb *urb, u8 *data, int len)
 	}
 #endif
 
+#if V003_MODULE_PWR
+	if (V003_CMD_GET_ID(urb->wIndex) == V003_PWR_MODULE_ID) {
+		pwr_handle_control_data(urb->wIndex, data, len);
+		return;
+	}
+#endif
+
 	/* data stage is currently only used for simple request extensions;
 	 * dispatch the request itself as well */
 	usb_handle_control_out_request(urb);
@@ -844,6 +867,31 @@ static void usb_reset_endpoint_toggles(struct rv003usb_internal *ist)
 	}
 }
 
+/*
+ * Take the device off the bus and put it back.  There is no protocol for this on
+ * the device side - the pull-up on D+ *is* the presence signal (USB 1.1 section
+ * 7.1.7), which is why the power module can use it to give the host a clean
+ * disconnect before it sleeps and a fresh enumeration when it wakes.
+ */
+void v003_usb_detach(void)
+{
+	funDigitalWrite(V003_PIN_USB_DPU, FUN_LOW);
+	/* the host samples the pull-up on its own schedule; one frame plus margin
+	 * is what it needs to notice the disconnect */
+	Delay_Ms(5);
+}
+
+void v003_usb_attach(void)
+{
+	funDigitalWrite(V003_PIN_USB_DPU, FUN_LOW);
+	Delay_Ms(1);
+	funDigitalWrite(V003_PIN_USB_DPU, FUN_HIGH);
+
+	usb_setup();
+	usb_reset_endpoint_toggles(&rv003usb_internal_data);
+	v003_frame_enable(0);
+}
+
 void usb_handle_other_control_message(struct usb_endpoint *e, struct usb_urb *s,
 				      struct rv003usb_internal *ist)
 {
@@ -927,6 +975,9 @@ int main()
 #if V003_MODULE_WDG
 	wdg_reset_cause_capture();
 #endif
+#if V003_MODULE_PWR
+	pwr_init();
+#endif
 	serial_from_esig();
 
 	stack_canary_paint();
@@ -974,6 +1025,12 @@ int main()
 
 		/* answer framed requests that arrived on EP2 OUT */
 		v003_frame_poll();
+
+		/* run a sleep whose start delay has passed (never inside the
+		 * control transfer that asked for it) */
+#if V003_MODULE_PWR
+		pwr_poll();
+#endif
 
 		/* refresh the stack measurement outside the USB interrupt */
 		stack_free_poll();

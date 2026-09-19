@@ -52,6 +52,17 @@ void wdg_reset_cause_capture(void)
 	RCC->RSTSCKR |= RSTSCKR_RMVF_Set;
 }
 
+u8 wdg_is_running(void)
+{
+	return wdg_running;
+}
+
+/* not wdg_timeout_ms(): that is the name of the state this reads */
+u16 wdg_timeout_get(void)
+{
+	return wdg_timeout_ms;
+}
+
 u32 wdg_reset_cause(void)
 {
 	return wdg_rst_flags;

@@ -119,6 +119,12 @@ struct v003_uart_cfg {
 extern void uart_handle_control_data(u16 cmd, const u8 *data, int len);
 extern u32 handle_uart_in_request(u16 cmd, u16 data);
 extern void uart_handle_out_request(u16 cmd, u16 data);
+/* Bytes the port has moved in total, both directions.  The power module
+ * snapshots this around a sleep: the receive interrupt clears RXNE before the
+ * core can look at the USART after waking, and in sleep mode it is *any* enabled
+ * interrupt that ends the sleep - including the transmitter draining its ring -
+ * so "the UART was busy" is the honest thing to report, not "a byte arrived". */
+extern u32 uart_activity_count(void);
 extern u16 uart_rx_take(u16 want, u8 **out);
 extern const struct v003_uart_cfg *uart_cfg_state(void);
 

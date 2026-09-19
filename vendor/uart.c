@@ -162,6 +162,11 @@ const struct v003_uart_cfg *uart_cfg_state(void)
 	return &uart_cfg;
 }
 
+u32 uart_activity_count(void)
+{
+	return rx_bytes + tx_bytes;
+}
+
 static void uart_hw_setup(void)
 {
 	RCC->APB2PCENR |= RCC_APB2Periph_AFIO | RCC_APB2Periph_GPIOD |

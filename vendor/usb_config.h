@@ -17,17 +17,33 @@
 #define RV003USB_HID_FEATURES        0
 #define RV003USB_SUPPORT_CONTROL_OUT 1
 
+/*
+ * The USB stack's EXTI handler covers lines 0..7 and, without this hook, treats
+ * *any* interrupt on them as bus traffic (it reads D+/D- and runs the state
+ * machine).  The power module wants line 6 - the board's boot button - as a wake
+ * source, and this is the upstream-provided way to say "this line is not yours":
+ * the handler checks EXTI->INTFR against the mask and, when the USB line is not
+ * the cause, runs RV003_ADD_EXTI_HANDLER instead and clears only the pending bits
+ * for the USB line and this mask.
+ */
+#if V003_MODULE_PWR
+#define RV003_ADD_EXTI_MASK    (1u << 6) /* PD6, the boot button */
+#define RV003_ADD_EXTI_HANDLER call pwr_button_edge
+#endif
+
 #define RV003USB_EVENT_DEBUGGING   1
 /* The ring is a debug capture facility: only our own LogUEvent pushes into it
  * (the USB stack's state machine does not depend on it) and main() drains it
  * every loop.  16 bytes per entry out of the same 2048 the receive rings want,
  * and 32 entries would eat 512 of them - the stack grows down from 0x20000800
  * straight into the statics, so an oversized ring does not just waste memory,
- * it causes silent corruption of whatever sits at the end of .bss.  4 entries
- * (64 bytes) is enough to see what happened; `make UEVENTS=8` brings the
- * historical depth back for a debugging session. */
+ * it causes silent corruption of whatever sits at the end of .bss.  Two entries
+ * (32 bytes) is the floor the modules have left: the power module's state and
+ * the UART's rings came out of the same 2 kB, and `make UEVENTS=4` (or 8) brings
+ * the depth back for a debugging session - it is a debug facility, and what it
+ * loses is counted nowhere, which is exactly why it is the first thing to give. */
 #ifndef RV003USB_NUMUEVENTS
-#define RV003USB_NUMUEVENTS        4
+#define RV003USB_NUMUEVENTS        2
 #endif
 
 #ifndef __ASSEMBLER__

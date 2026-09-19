@@ -49,5 +49,9 @@ extern u32 handle_wdg_in_request(u16 cmd, u16 data);
 /* call once at boot, before anything can look at the reset flags */
 extern void wdg_reset_cause_capture(void);
 extern u32 wdg_reset_cause(void);
+/* what the low power module needs to know: the IWDG keeps counting while the
+ * core sleeps, so a sleep that outlasts it is a reset in the middle of the night */
+extern u8 wdg_is_running(void);
+extern u16 wdg_timeout_get(void);
 
 #endif /* __WDG_H */

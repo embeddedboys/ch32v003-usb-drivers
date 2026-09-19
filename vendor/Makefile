@@ -9,9 +9,14 @@ TARGET_MCU:=CH32V003
 # through V003_GET_CAPABILITIES, so a host never probes a module that is not in
 # the build.  Names: gpio spi i2c adc pwm uart wdg pwr (the ones without a source
 # file yet are reserved and simply stay off).
-MODULES?=gpio,spi,i2c,wdg,pwm,adc,uart
+MODULES?=gpio,spi,i2c,wdg,pwm,adc,uart,pwr
 module_flag = -DV003_MODULE_$(1)=$(if $(findstring $(2),$(MODULES)),1,0)
-TRACE?=1
+# The I2C clock tracer is a debug facility: 136 bytes of RAM and 224 of flash out
+# of the 2 kB the modules share, and it is only needed while calibrating the bit
+# banged timing (which is done, notes/i2c.md).  Off by default because the stack
+# margin under a mixed workload is what pays for it - `make TRACE=1` for the
+# tracer and for scripts/i2c_trace.py, which skips without it.
+TRACE?=0
 
 ADDITIONAL_C_FILES+=../rv003usb/rv003usb.S ../rv003usb/rv003usb.c ./hexdump.c ./gpio.c ./frame.c
 ifneq (,$(findstring spi,$(MODULES)))
@@ -31,6 +36,9 @@ ADDITIONAL_C_FILES+=./adc.c
 endif
 ifneq (,$(findstring uart,$(MODULES)))
 ADDITIONAL_C_FILES+=./uart.c
+endif
+ifneq (,$(findstring pwr,$(MODULES)))
+ADDITIONAL_C_FILES+=./pwr.c
 endif
 
 EXTRA_CFLAGS:=-I../lib -I../rv003usb -Wno-parentheses
